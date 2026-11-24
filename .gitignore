@@ -1,0 +1,16 @@
+# Build outputs
+.build/
+*.bin
+*.elf
+
+# Local secrets (never commit; commit secrets.h.example instead)
+src/config/secrets.h
+
+# Python / local tooling
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.claude/settings.local.json
+.handoff/
+.ds-tmp/
