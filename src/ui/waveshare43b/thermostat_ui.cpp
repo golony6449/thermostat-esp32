@@ -10,19 +10,27 @@ LV_FONT_DECLARE(kr_font_28);
 namespace thermostat::ui {
 namespace {
 
-constexpr uint32_t kColorBackground = 0x0E1116;
-constexpr uint32_t kColorCard = 0x1A2028;
-constexpr uint32_t kColorCardAlt = 0x232B35;
-constexpr uint32_t kColorText = 0xEDF2F8;
-constexpr uint32_t kColorMuted = 0x9AA6B5;
+// High-contrast dark palette from the Wave 4 plan.  Every label gets an
+// explicit text color so the LVGL default (black) never lands on a dark
+// surface, which is what made the buttons unreadable on the real panel.
+constexpr uint32_t kColorBackground = 0x0B1220;
+constexpr uint32_t kColorCard = 0x162032;
+constexpr uint32_t kColorCardBorder = 0x2D3F59;
+constexpr uint32_t kColorText = 0xF8FAFC;
+constexpr uint32_t kColorTextSubtle = 0xCBD5E1;
+constexpr uint32_t kColorMuted = 0x94A3B8;
+constexpr uint32_t kColorButton = 0x2B3B52;
+constexpr uint32_t kColorButtonBorder = 0x64748B;
+constexpr uint32_t kColorButtonPressed = 0x3E5474;
 constexpr uint32_t kColorAccent = 0xFF8A3D;
-constexpr uint32_t kColorTextOnAccent = 0x1A1206;
+constexpr uint32_t kColorTextOnAccent = 0x140D04;
+constexpr uint32_t kColorAccentBorder = 0xFFB074;
+constexpr uint32_t kColorButtonDisabled = 0x1A2332;
+constexpr uint32_t kColorButtonDisabledBorder = 0x283548;
+constexpr uint32_t kColorTextDisabled = 0x475569;
 constexpr uint32_t kColorBadgeIdle = 0x39424E;
-constexpr uint32_t kColorButton = 0x2A323D;
-constexpr uint32_t kColorButtonPressed = 0x384353;
 constexpr uint32_t kColorWarning = 0xFFC857;
 constexpr uint32_t kColorError = 0xFF5C5C;
-constexpr uint32_t kColorPanelBorder = 0x3A4552;
 
 constexpr int16_t kTargetStepCenti = 50;   // 0.5 degC
 constexpr int16_t kFreezeStepCenti = 50;   // 0.5 degC
@@ -103,8 +111,9 @@ lv_obj_t* ThermostatUi::create_card(lv_obj_t* parent, int x, int y, int width,
   lv_obj_set_size(card, width, height);
   lv_obj_set_style_bg_color(card, lv_color_hex(kColorCard), 0);
   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(card, 20, 0);
-  lv_obj_set_style_border_width(card, 0, 0);
+  lv_obj_set_style_radius(card, 18, 0);
+  lv_obj_set_style_border_width(card, 1, 0);
+  lv_obj_set_style_border_color(card, lv_color_hex(kColorCardBorder), 0);
   lv_obj_set_style_shadow_width(card, 0, 0);
   lv_obj_set_style_pad_all(card, 0, 0);
   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
@@ -132,7 +141,8 @@ lv_obj_t* ThermostatUi::create_button(lv_obj_t* parent, const char* text,
   lv_obj_set_style_bg_color(button, lv_color_hex(kColorButtonPressed),
                             LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(button, 0, 0);
+  lv_obj_set_style_border_width(button, 2, 0);
+  lv_obj_set_style_border_color(button, lv_color_hex(kColorButtonBorder), 0);
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_set_style_pad_all(button, 0, 0);
   lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
@@ -143,6 +153,9 @@ lv_obj_t* ThermostatUi::create_button(lv_obj_t* parent, const char* text,
   lv_obj_t* label = lv_label_create(button);
   lv_label_set_text(label, text);
   lv_obj_set_style_text_font(label, font, 0);
+  // LVGL's default label color is black; without this explicit high-contrast
+  // color the button captions disappear on the dark button surface.
+  lv_obj_set_style_text_color(label, lv_color_hex(kColorText), 0);
   lv_obj_center(label);
   return button;
 }
@@ -151,11 +164,20 @@ void ThermostatUi::apply_button_style(lv_obj_t* button, bool selected) {
   if (button == nullptr) {
     return;
   }
-  lv_obj_set_style_bg_color(button,
-                            lv_color_hex(selected ? kColorAccent : kColorButton),
-                            0);
-  lv_obj_set_style_text_color(
-      button, lv_color_hex(selected ? kColorTextOnAccent : kColorText), 0);
+  lv_obj_set_style_bg_color(
+      button, lv_color_hex(selected ? kColorAccent : kColorButton), 0);
+  lv_obj_set_style_bg_color(
+      button,
+      lv_color_hex(selected ? kColorAccent : kColorButtonPressed),
+      LV_STATE_PRESSED);
+  lv_obj_set_style_border_color(
+      button, lv_color_hex(selected ? kColorAccentBorder : kColorButtonBorder),
+      0);
+  lv_obj_t* label = lv_obj_get_child(button, 0);
+  if (label != nullptr) {
+    lv_obj_set_style_text_color(
+        label, lv_color_hex(selected ? kColorTextOnAccent : kColorText), 0);
+  }
 }
 
 void ThermostatUi::build_status_column(lv_obj_t* parent) {
@@ -181,7 +203,7 @@ void ThermostatUi::build_status_column(lv_obj_t* parent) {
   source_badge_ = lv_obj_create(parent);
   lv_obj_set_pos(source_badge_, 24, 180);
   lv_obj_set_size(source_badge_, 422, 64);
-  lv_obj_set_style_bg_color(source_badge_, lv_color_hex(kColorCardAlt), 0);
+  lv_obj_set_style_bg_color(source_badge_, lv_color_hex(kColorButton), 0);
   lv_obj_set_style_bg_opa(source_badge_, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(source_badge_, 14, 0);
   lv_obj_set_style_border_width(source_badge_, 1, 0);
@@ -241,44 +263,44 @@ void ThermostatUi::build_settings_overlay(lv_obj_t* parent) {
   lv_obj_t* panel = lv_obj_create(settings_overlay_);
   lv_obj_set_size(panel, 520, 360);
   lv_obj_center(panel);
-  lv_obj_set_style_bg_color(panel, lv_color_hex(kColorCardAlt), 0);
+  lv_obj_set_style_bg_color(panel, lv_color_hex(kColorCard), 0);
   lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(panel, 24, 0);
+  lv_obj_set_style_radius(panel, 20, 0);
   lv_obj_set_style_border_width(panel, 2, 0);
-  lv_obj_set_style_border_color(panel, lv_color_hex(kColorPanelBorder), 0);
+  lv_obj_set_style_border_color(panel, lv_color_hex(kColorCardBorder), 0);
   lv_obj_set_style_pad_all(panel, 0, 0);
   lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t* title = create_label(panel, "설정", &kr_font_28, kColorText);
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
 
   lv_obj_t* repeat_caption =
       create_label(panel, "반복 모드 구동 시간", &kr_font_20, kColorText);
-  lv_obj_set_pos(repeat_caption, 32, 96);
-  create_button(panel, "-", Action::kRepeatMinus, 300, 82, 48, 48, false,
+  lv_obj_set_pos(repeat_caption, 32, 98);
+  create_button(panel, "-", Action::kRepeatMinus, 272, 82, 60, 56, false,
                 &kr_font_20);
   repeat_value_label_ =
       create_label(panel, "15분", &kr_font_20, kColorAccent);
-  lv_obj_set_pos(repeat_value_label_, 352, 96);
-  lv_obj_set_width(repeat_value_label_, 92);
+  lv_obj_set_pos(repeat_value_label_, 340, 98);
+  lv_obj_set_width(repeat_value_label_, 96);
   lv_obj_set_style_text_align(repeat_value_label_, LV_TEXT_ALIGN_CENTER, 0);
-  create_button(panel, "+", Action::kRepeatPlus, 452, 82, 48, 48, false,
+  create_button(panel, "+", Action::kRepeatPlus, 444, 82, 60, 56, false,
                 &kr_font_20);
 
   lv_obj_t* freeze_caption =
       create_label(panel, "최저온도 보호", &kr_font_20, kColorText);
-  lv_obj_set_pos(freeze_caption, 32, 176);
-  create_button(panel, "-", Action::kFreezeMinus, 300, 162, 48, 48, false,
+  lv_obj_set_pos(freeze_caption, 32, 178);
+  create_button(panel, "-", Action::kFreezeMinus, 272, 162, 60, 56, false,
                 &kr_font_20);
   freeze_value_label_ =
       create_label(panel, "10.0℃", &kr_font_20, kColorAccent);
-  lv_obj_set_pos(freeze_value_label_, 352, 176);
-  lv_obj_set_width(freeze_value_label_, 92);
+  lv_obj_set_pos(freeze_value_label_, 340, 178);
+  lv_obj_set_width(freeze_value_label_, 96);
   lv_obj_set_style_text_align(freeze_value_label_, LV_TEXT_ALIGN_CENTER, 0);
-  create_button(panel, "+", Action::kFreezePlus, 452, 162, 48, 48, false,
+  create_button(panel, "+", Action::kFreezePlus, 444, 162, 60, 56, false,
                 &kr_font_20);
 
-  create_button(panel, "닫기", Action::kCloseSettings, 190, 280, 140, 48, false,
+  create_button(panel, "닫기", Action::kCloseSettings, 170, 272, 180, 56, false,
                 &kr_font_20);
 }
 
