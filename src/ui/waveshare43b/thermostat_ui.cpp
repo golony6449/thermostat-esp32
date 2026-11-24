@@ -316,8 +316,7 @@ void ThermostatUi::refresh_all() {
                       sizeof(buffer));
   lv_label_set_text(current_temp_label_, buffer);
 
-  format_temp_celsius(vm_.target_temp_centi, true, buffer, sizeof(buffer));
-  lv_label_set_text(primary_value_label_, buffer);
+  refresh_primary_control();
 
   lv_label_set_text(heating_label_, vm_.heating_active ? "난방 중" : "대기");
   lv_obj_set_style_bg_color(
@@ -332,6 +331,16 @@ void ThermostatUi::refresh_all() {
   refresh_settings_values();
 
   lv_label_set_text(time_label_, vm_.time_text);
+}
+
+void ThermostatUi::refresh_primary_control() {
+  if (primary_caption_label_ == nullptr || primary_value_label_ == nullptr) {
+    return;
+  }
+  lv_label_set_text(primary_caption_label_, primary_caption_for_mode(vm_.mode));
+  char buffer[16];
+  format_primary_value(vm_, buffer, sizeof(buffer));
+  lv_label_set_text(primary_value_label_, buffer);
 }
 
 void ThermostatUi::refresh_source_badge() {
@@ -372,16 +381,28 @@ void ThermostatUi::handle_action(Action action) {
   switch (action) {
     case Action::kPrimaryMinus:
     case Action::kPrimaryPlus: {
-      const int16_t next = step_target_temp(
-          vm_.target_temp_centi,
-          action == Action::kPrimaryPlus ? kTargetStepCenti : -kTargetStepCenti);
-      if (next != vm_.target_temp_centi) {
-        vm_.target_temp_centi = next;
-        char buffer[16];
-        format_temp_celsius(next, true, buffer, sizeof(buffer));
-        lv_label_set_text(primary_value_label_, buffer);
-        if (callbacks_.on_target_temp_change != nullptr) {
-          callbacks_.on_target_temp_change(next, callbacks_.ctx);
+      const int direction = action == Action::kPrimaryPlus ? 1 : -1;
+      if (vm_.mode == UiMode::kRepeat) {
+        const uint8_t next = step_repeat_minutes(
+            vm_.repeat_on_minutes, direction * kRepeatStepMinutes);
+        if (next != vm_.repeat_on_minutes) {
+          vm_.repeat_on_minutes = next;
+          refresh_primary_control();
+          refresh_settings_values();
+          if (callbacks_.on_repeat_minutes_change != nullptr) {
+            callbacks_.on_repeat_minutes_change(next, callbacks_.ctx);
+          }
+        }
+      } else {
+        const int16_t next =
+            step_target_temp(vm_.target_temp_centi,
+                             direction * kTargetStepCenti);
+        if (next != vm_.target_temp_centi) {
+          vm_.target_temp_centi = next;
+          refresh_primary_control();
+          if (callbacks_.on_target_temp_change != nullptr) {
+            callbacks_.on_target_temp_change(next, callbacks_.ctx);
+          }
         }
       }
       break;
@@ -398,6 +419,9 @@ void ThermostatUi::handle_action(Action action) {
       if (next != vm_.mode) {
         vm_.mode = next;
         refresh_mode_buttons();
+        // Switch the main caption/value immediately so the tap feels instant
+        // (the firmware update arrives a moment later).
+        refresh_primary_control();
         if (callbacks_.on_mode_change != nullptr) {
           callbacks_.on_mode_change(next, callbacks_.ctx);
         }
@@ -419,6 +443,8 @@ void ThermostatUi::handle_action(Action action) {
       if (next != vm_.repeat_on_minutes) {
         vm_.repeat_on_minutes = next;
         refresh_settings_values();
+        // Keep the bottom-panel main value in sync with the modal.
+        refresh_primary_control();
         if (callbacks_.on_repeat_minutes_change != nullptr) {
           callbacks_.on_repeat_minutes_change(next, callbacks_.ctx);
         }

@@ -7,7 +7,10 @@
 #include "test_harness.h"
 #include "ui/waveshare43b/ui_view_model.h"
 
+using thermostat::ui::can_adjust_primary;
+using thermostat::ui::format_primary_value;
 using thermostat::ui::format_temp_celsius;
+using thermostat::ui::primary_caption_for_mode;
 using thermostat::ui::UiMode;
 using thermostat::ui::UiViewModel;
 using thermostat::ui::SourceSeverity;
@@ -129,6 +132,48 @@ TEST_CASE(ui_mode_values_match_matter_ordinals) {
             static_cast<uint8_t>(SourceSeverity::kWarning));
   EXPECT_EQ(static_cast<uint8_t>(2),
             static_cast<uint8_t>(SourceSeverity::kError));
+}
+
+TEST_CASE(primary_caption_for_mode_names_the_adjustable_value) {
+  EXPECT_STREQ("목표 온도", primary_caption_for_mode(UiMode::kTemperature));
+  EXPECT_STREQ("반복 시간", primary_caption_for_mode(UiMode::kRepeat));
+  EXPECT_STREQ("꺼짐", primary_caption_for_mode(UiMode::kOff));
+}
+
+TEST_CASE(format_primary_value_follows_mode) {
+  char buffer[16];
+  UiViewModel vm;
+
+  vm.mode = UiMode::kTemperature;
+  vm.target_temp_centi = 2250;
+  format_primary_value(vm, buffer, sizeof(buffer));
+  EXPECT_STREQ("22.5℃", buffer);
+
+  vm.mode = UiMode::kRepeat;
+  vm.repeat_on_minutes = 15;
+  format_primary_value(vm, buffer, sizeof(buffer));
+  EXPECT_STREQ("15분", buffer);
+
+  vm.repeat_on_minutes = 0;
+  format_primary_value(vm, buffer, sizeof(buffer));
+  EXPECT_STREQ("0분", buffer);
+
+  vm.repeat_on_minutes = 60;
+  format_primary_value(vm, buffer, sizeof(buffer));
+  EXPECT_STREQ("60분", buffer);
+
+  vm.mode = UiMode::kOff;
+  format_primary_value(vm, buffer, sizeof(buffer));
+  EXPECT_STREQ("-", buffer);
+
+  // Must not crash when called without a buffer.
+  format_primary_value(vm, nullptr, 0);
+}
+
+TEST_CASE(can_adjust_primary_only_blocks_off_mode) {
+  EXPECT_FALSE(can_adjust_primary(UiMode::kOff));
+  EXPECT_TRUE(can_adjust_primary(UiMode::kTemperature));
+  EXPECT_TRUE(can_adjust_primary(UiMode::kRepeat));
 }
 
 THERMOSTAT_TEST_MAIN()

@@ -131,4 +131,47 @@ inline void format_temp_celsius(int16_t temp_centi, bool valid, char* buf,
                 static_cast<long>(whole), static_cast<long>(fraction));
 }
 
+// Caption shown above the main value in the bottom control panel.  The main
+// +/- buttons take on a different meaning per mode, so the caption must
+// change with the mode instead of always saying "목표 온도".
+inline const char* primary_caption_for_mode(UiMode mode) {
+  switch (mode) {
+    case UiMode::kTemperature:
+      return "목표 온도";
+    case UiMode::kRepeat:
+      return "반복 시간";
+    case UiMode::kOff:
+    default:
+      return "꺼짐";
+  }
+}
+
+// Main value shown between the large +/- buttons: the target temperature in
+// temperature mode, the repeat on-minutes in repeat mode, and a dash when the
+// thermostat is off (nothing is adjustable).
+inline void format_primary_value(const UiViewModel& vm, char* buf,
+                                 size_t buf_size) {
+  if (buf == nullptr || buf_size == 0) {
+    return;
+  }
+  switch (vm.mode) {
+    case UiMode::kTemperature:
+      format_temp_celsius(vm.target_temp_centi, true, buf, buf_size);
+      return;
+    case UiMode::kRepeat:
+      std::snprintf(buf, buf_size, "%u분",
+                    static_cast<unsigned>(vm.repeat_on_minutes));
+      return;
+    case UiMode::kOff:
+    default:
+      std::snprintf(buf, buf_size, "-");
+      return;
+  }
+}
+
+// Off mode locks the main +/- buttons; temperature and repeat modes allow
+// editing.  The LVGL layer uses this for the visual/event lock and the action
+// handler checks it again so a stale event can never change a value.
+inline bool can_adjust_primary(UiMode mode) { return mode != UiMode::kOff; }
+
 }  // namespace thermostat::ui
