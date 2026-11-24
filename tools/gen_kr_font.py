@@ -8,6 +8,7 @@ is exactly the format produced by ``lv_font_conv --no-compress --bpp 4``.
 Outputs (committed to the repository):
     src/ui/waveshare43b/kr_font_20.c   -> LV_FONT_DECLARE(kr_font_20)
     src/ui/waveshare43b/kr_font_28.c   -> LV_FONT_DECLARE(kr_font_28)
+    src/ui/waveshare43b/kr_font_48.c   -> LV_FONT_DECLARE(kr_font_48)
 
 Pillow is not a project dependency.  Run the script through uv:
 
@@ -32,6 +33,7 @@ UI_TEXT_CORPUS = [
     # thermostat_ui.cpp labels
     "현재 온도",
     "목표 온도",
+    "반복 시간",
     "난방 중",
     "대기",
     "꺼짐",
@@ -65,7 +67,7 @@ FONT_CANDIDATES = [
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
 ]
 
-FONT_SIZES = {20: "kr_font_20", 28: "kr_font_28"}
+FONT_SIZES = {20: "kr_font_20", 28: "kr_font_28", 48: "kr_font_48"}
 
 # LVGL lv_font_fmt_txt_glyph_dsc_t uses 4 bpp plain (uncompressed) bitmaps.
 BPP = 4
