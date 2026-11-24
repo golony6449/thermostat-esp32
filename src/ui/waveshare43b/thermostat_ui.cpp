@@ -341,6 +341,45 @@ void ThermostatUi::refresh_primary_control() {
   char buffer[16];
   format_primary_value(vm_, buffer, sizeof(buffer));
   lv_label_set_text(primary_value_label_, buffer);
+
+  // Off mode has nothing to adjust: paint the large +/- buttons as disabled,
+  // drop the clickable flag, and mute the main value.  Temperature and repeat
+  // modes restore the high-contrast active style immediately.
+  const bool adjustable = can_adjust_primary(vm_.mode);
+  lv_obj_t* buttons[2] = {primary_minus_btn_, primary_plus_btn_};
+  for (lv_obj_t* button : buttons) {
+    if (button == nullptr) {
+      continue;
+    }
+    lv_obj_t* label = lv_obj_get_child(button, 0);
+    if (adjustable) {
+      lv_obj_clear_state(button, LV_STATE_DISABLED);
+      lv_obj_add_flag(button, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_style_bg_color(button, lv_color_hex(kColorButton), 0);
+      lv_obj_set_style_border_color(button, lv_color_hex(kColorButtonBorder), 0);
+      lv_obj_set_style_bg_color(button, lv_color_hex(kColorButtonPressed),
+                                LV_STATE_PRESSED);
+      if (label != nullptr) {
+        lv_obj_set_style_text_color(label, lv_color_hex(kColorText), 0);
+      }
+    } else {
+      lv_obj_add_state(button, LV_STATE_DISABLED);
+      lv_obj_clear_flag(button, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_style_bg_color(button, lv_color_hex(kColorButtonDisabled), 0);
+      lv_obj_set_style_border_color(
+          button, lv_color_hex(kColorButtonDisabledBorder), 0);
+      lv_obj_set_style_bg_color(button, lv_color_hex(kColorButtonDisabled),
+                                LV_STATE_DISABLED);
+      lv_obj_set_style_border_color(
+          button, lv_color_hex(kColorButtonDisabledBorder), LV_STATE_DISABLED);
+      if (label != nullptr) {
+        lv_obj_set_style_text_color(label, lv_color_hex(kColorTextDisabled), 0);
+      }
+    }
+  }
+  lv_obj_set_style_text_color(
+      primary_value_label_,
+      lv_color_hex(adjustable ? kColorText : kColorMuted), 0);
 }
 
 void ThermostatUi::refresh_source_badge() {
@@ -381,6 +420,12 @@ void ThermostatUi::handle_action(Action action) {
   switch (action) {
     case Action::kPrimaryMinus:
     case Action::kPrimaryPlus: {
+      // Second line of defence: even if a stale event slips past the
+      // disabled widget, off mode must never change a value or fire a
+      // callback.
+      if (!can_adjust_primary(vm_.mode)) {
+        break;
+      }
       const int direction = action == Action::kPrimaryPlus ? 1 : -1;
       if (vm_.mode == UiMode::kRepeat) {
         const uint8_t next = step_repeat_minutes(
