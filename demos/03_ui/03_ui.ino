@@ -156,18 +156,22 @@ void handle_serial_commands() {
 }
 
 void on_target_temp_change(int16_t new_target_centi, void*) {
+  g_view_model.target_temp_centi = new_target_centi;
   Serial.printf("[03_ui] cb target=%d centi\n", new_target_centi);
 }
 
 void on_mode_change(UiMode new_mode, void*) {
+  g_view_model.mode = new_mode;
   Serial.printf("[03_ui] cb mode=%u\n", static_cast<unsigned>(new_mode));
 }
 
 void on_repeat_minutes_change(uint8_t new_minutes, void*) {
+  g_view_model.repeat_on_minutes = new_minutes;
   Serial.printf("[03_ui] cb repeat=%u min\n", static_cast<unsigned>(new_minutes));
 }
 
 void on_freeze_protect_change(int16_t new_freeze_centi, void*) {
+  g_view_model.freeze_protect_centi = new_freeze_centi;
   Serial.printf("[03_ui] cb freeze=%d centi\n", new_freeze_centi);
 }
 
