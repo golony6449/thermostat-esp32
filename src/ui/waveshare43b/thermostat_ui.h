@@ -31,8 +31,8 @@ class ThermostatUi {
  private:
   enum class Action : uint8_t {
     kNone = 0,
-    kTargetMinus,
-    kTargetPlus,
+    kPrimaryMinus,
+    kPrimaryPlus,
     kModeOff,
     kModeTemperature,
     kModeRepeat,
@@ -51,14 +51,15 @@ class ThermostatUi {
   lv_obj_t* create_label(lv_obj_t* parent, const char* text,
                          const lv_font_t* font, uint32_t color);
   lv_obj_t* create_button(lv_obj_t* parent, const char* text, Action action,
-                          int x, int y, int width, int height, bool circle,
+                          int x, int y, int width, int height, int radius,
                           const lv_font_t* font);
   void apply_button_style(lv_obj_t* button, bool selected);
 
-  void build_status_column(lv_obj_t* parent);
-  void build_control_column(lv_obj_t* parent);
+  void build_top_status_bar(lv_obj_t* parent);
+  void build_bottom_control_panel(lv_obj_t* parent);
   void build_settings_overlay(lv_obj_t* parent);
   void refresh_all();
+  void refresh_primary_control();
   void refresh_mode_buttons();
   void refresh_source_badge();
   void refresh_settings_values();
@@ -74,7 +75,10 @@ class ThermostatUi {
   lv_obj_t* source_badge_ = nullptr;
   lv_obj_t* source_label_ = nullptr;
   lv_obj_t* time_label_ = nullptr;
-  lv_obj_t* target_temp_label_ = nullptr;
+  lv_obj_t* primary_minus_btn_ = nullptr;
+  lv_obj_t* primary_plus_btn_ = nullptr;
+  lv_obj_t* primary_caption_label_ = nullptr;
+  lv_obj_t* primary_value_label_ = nullptr;
   lv_obj_t* mode_buttons_[3] = {nullptr, nullptr, nullptr};
   lv_obj_t* repeat_value_label_ = nullptr;
   lv_obj_t* freeze_value_label_ = nullptr;
