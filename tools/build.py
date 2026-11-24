@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""Build, upload and monitor thermostat-esp32 ESP32-S3 sketches.
+
+Uses a project-isolated arduino-cli configuration so the global Arduino15
+data directory shared with other projects (for example esp32-rtos-lab and the
+Arduino IDE) is never modified.
+
+Only the Python standard library is used. Commands are executed with
+``subprocess`` and an argument list (``shell=False``).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+BASE_FQBN = "esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,FlashSize=16M,PSRAM=opi"
+DEFAULT_PARTITION = "app3M_fat9M_16MB"
+DEFAULT_BAUD = 115200
+ESP32_CORE_PACKAGE = "esp32:esp32@3.3.12"
+ESP32_BOARD_MANAGER_URL = (
+    "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+)
+
+DEFAULT_PORT_WINDOWS = "COM9"
+DEFAULT_PORT_POSIX = "/dev/ttyUSB0"
+
+_PORT_BUSY_PATTERNS = (
+    "access is denied",
+    "could not open port",
+    "can't open serial port",
+    "cannot open serial port",
+    "failed to open serial port",
+    "error opening serial port",
+    "serial port busy",
+    "port is busy",
+    "resource temporarily unavailable",
+    "device or resource busy",
+    "permission denied",
+)
+
+
+def make_fqbn(partition: str | None = DEFAULT_PARTITION) -> str:
+    """Return the target FQBN, appending the partition scheme when given."""
+    if partition:
+        return f"{BASE_FQBN},PartitionScheme={partition}"
+    return BASE_FQBN
+
+
+def default_port(platform: str = sys.platform) -> str:
+    """Best-effort default serial port for this platform."""
+    if platform.startswith("win"):
+        return DEFAULT_PORT_WINDOWS
+    return DEFAULT_PORT_POSIX
+
+
+def find_cli(env: Mapping[str, str] = os.environ) -> Path | None:
+    """Locate arduino-cli: explicit env var, PATH, then the Arduino IDE bundle."""
+    override = env.get("ARDUINO_CLI")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_file():
+            return candidate
+
+    for name in ("arduino-cli", "arduino-cli.exe"):
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return Path(found)
+
+    if sys.platform.startswith("win"):
+        candidates = []
+        program_files = env.get("ProgramFiles", r"C:\Program Files")
+        if program_files:
+            candidates.append(
+                Path(program_files)
+                / "Arduino IDE"
+                / "resources"
+                / "app"
+                / "lib"
+                / "backend"
+                / "resources"
+                / "arduino-cli.exe"
+            )
+        local_appdata = env.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.append(
+                Path(local_appdata)
+                / "Programs"
+                / "Arduino IDE"
+                / "resources"
+                / "app"
+                / "lib"
+                / "backend"
+                / "resources"
+                / "arduino-cli.exe"
+            )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+
+    return None
+
+
+def default_config_path(
+    env: Mapping[str, str] = os.environ, platform: str = sys.platform
+) -> Path:
+    """Return the project-isolated arduino-cli.yaml path."""
+    override = env.get("THERMOSTAT_ARDUINO_CONFIG")
+    if override:
+        return Path(override).expanduser()
+
+    if platform.startswith("win"):
+        local_appdata = env.get("LOCALAPPDATA")
+        if local_appdata:
+            base = Path(local_appdata)
+        else:
+            base = Path.home() / "AppData" / "Local"
+        return base / "thermostat-esp32" / "arduino-cli.yaml"
+
+    return Path.home() / ".local" / "share" / "thermostat-esp32" / "arduino-cli.yaml"
+
+
+def ensure_config(
+    config_path: Path,
+    *,
+    user_dir: Path | None = None,
+    data_dir: Path | None = None,
+    board_manager_url: str = ESP32_BOARD_MANAGER_URL,
+) -> Path:
+    """Create the isolated arduino-cli.yaml if missing; never overwrite it.
+
+    The data directory lives next to the config file so installed cores are
+    independent from the global ``Arduino15`` used by other projects. The user
+    directory is shared with the regular Arduino sketchbook so offline
+    Waveshare libraries keep working.
+    """
+    config_path = Path(config_path).expanduser()
+    if config_path.exists():
+        return config_path
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if data_dir is None:
+        data_dir = config_path.parent / "arduino15"
+    data_dir = Path(data_dir).expanduser()
+
+    if user_dir is None:
+        user_dir = Path.home() / "Documents" / "Arduino"
+    user_dir = Path(user_dir).expanduser()
+
+    content = (
+        "# Generated by tools/build.py: project-isolated arduino-cli config.\n"
+        "# The global Arduino15 data directory is intentionally not used.\n"
+        "board_manager:\n"
+        "  additional_urls:\n"
+        f"    - {board_manager_url}\n"
+        "\n"
+        "directories:\n"
+        f"  data: {data_dir.as_posix()}\n"
+        f"  downloads: {(data_dir / 'staging').as_posix()}\n"
+        f"  user: {user_dir.as_posix()}\n"
+    )
+    with config_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+    return config_path
+
+
+def read_demo_modules(sketch_dir: Path, repo_root: Path) -> list[Path]:
+    """Read ``<sketch>/modules.txt`` and resolve module paths under repo_root."""
+    sketch_dir = Path(sketch_dir)
+    repo_root = Path(repo_root)
+    modules_file = sketch_dir / "modules.txt"
+    if not modules_file.is_file():
+        return []
+
+    modules: list[Path] = []
+    text = modules_file.read_text(encoding="utf-8")
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        module = repo_root / line
+        if not module.exists():
+            raise FileNotFoundError(
+                f"{modules_file}:{lineno}: module path not found: {module}"
+            )
+        modules.append(module)
+    return modules
+
+
+def build_commands(
+    cli,
+    sketch,
+    build_dir,
+    fqbn,
+    config,
+    libraries,
+    include_dir,
+    upload,
+    port,
+) -> list[list[str]]:
+    """Assemble arduino-cli compile and (optional) upload commands."""
+    prefix = [str(cli)]
+    if config is not None:
+        prefix.extend(["--config-file", str(config)])
+
+    compile_command = prefix + [
+        "compile",
+        "--fqbn",
+        str(fqbn),
+        "--build-path",
+        str(build_dir),
+    ]
+    for library in libraries:
+        compile_command.extend(["--library", str(library)])
+    include_flag = f"-I{Path(include_dir).as_posix()}"
+    compile_command.extend(
+        [
+            "--build-property",
+            f"compiler.cpp.extra_flags={include_flag}",
+            "--build-property",
+            f"compiler.c.extra_flags={include_flag}",
+            str(sketch),
+        ]
+    )
+
+    commands = [compile_command]
+
+    if upload:
+        upload_command = prefix + ["upload"]
+        if port:
+            upload_command.extend(["-p", str(port)])
+        upload_command.extend(
+            [
+                "--fqbn",
+                str(fqbn),
+                "--input-dir",
+                str(build_dir),
+                str(sketch),
+            ]
+        )
+        commands.append(upload_command)
+
+    return commands
+
+
+def build_monitor_command(
+    cli, config, port, baud: int = DEFAULT_BAUD
+) -> list[str]:
+    """Assemble the arduino-cli monitor command."""
+    command = [str(cli)]
+    if config is not None:
+        command.extend(["--config-file", str(config)])
+    command.append("monitor")
+    if port:
+        command.extend(["-p", str(port)])
+    command.extend(["-c", f"baudrate={baud}"])
+    return command
+
+
+def port_busy_hint(output: str) -> str | None:
+    """Return a Korean hint when output looks like a serial port busy error."""
+    lowered = output.lower()
+    if not any(pattern in lowered for pattern in _PORT_BUSY_PATTERNS):
+        return None
+    return (
+        "시리얼 포트를 열지 못했습니다. Arduino IDE 시리얼 모니터처럼 포트를 점유한 "
+        "프로그램을 닫고 다시 시도하세요. Linux에서는 dialout 그룹 권한도 확인하세요."
+    )
+
+
+def run_logged(command: Sequence[str]) -> tuple[int, str]:
+    """Run a command, capture its output, echo it, and return (code, output)."""
+    print(f"$ {shlex.join([str(part) for part in command])}", flush=True)
+    completed = subprocess.run(
+        [str(part) for part in command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n", flush=True)
+    return completed.returncode, output
+
+
+def run_interactive(command: Sequence[str]) -> int:
+    """Run a long-lived interactive command such as the serial monitor."""
+    print(f"$ {shlex.join([str(part) for part in command])}", flush=True)
+    completed = subprocess.run([str(part) for part in command], check=False)
+    return completed.returncode
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="thermostat-esp32 ESP32-S3 build / upload / monitor helper"
+    )
+    parser.add_argument(
+        "sketch",
+        nargs="?",
+        help="스케치 폴더 또는 .ino 경로 (예: demos/00_smoke, 저장소 루트 기준)",
+    )
+    parser.add_argument("--upload", action="store_true", help="컴파일 후 업로드")
+    parser.add_argument("--monitor", action="store_true", help="시리얼 모니터 실행")
+    parser.add_argument("--port", help="시리얼 포트 (예: COM9, /dev/ttyUSB0)")
+    parser.add_argument(
+        "--baud", type=int, default=DEFAULT_BAUD, help="모니터 baudrate"
+    )
+    parser.add_argument(
+        "--partition",
+        default=DEFAULT_PARTITION,
+        help=f"파티션 스킴 (기본: {DEFAULT_PARTITION})",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="명령만 출력하고 실행하지 않음"
+    )
+    return parser.parse_args(argv)
+
+
+def resolve_sketch_dir(sketch: str) -> Path:
+    """Resolve a sketch argument relative to the repository root."""
+    sketch_path = Path(sketch)
+    if not sketch_path.is_absolute():
+        sketch_path = REPO_ROOT / sketch_path
+    sketch_path = sketch_path.resolve()
+    if sketch_path.is_file():
+        return sketch_path.parent
+    return sketch_path
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    if not args.sketch and not args.monitor:
+        print(
+            "스케치 경로 또는 --monitor 중 하나는 지정해야 합니다. "
+            "(예: python tools/build.py demos/00_smoke)",
+            file=sys.stderr,
+        )
+        return 2
+
+    port = args.port or os.environ.get("THERMOSTAT_PORT") or default_port()
+    config = ensure_config(default_config_path())
+
+    cli = find_cli()
+    if cli is None:
+        print(
+            "arduino-cli를 찾지 못했습니다. ARDUINO_CLI 환경변수나 PATH를 확인하세요.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.sketch:
+        sketch_dir = resolve_sketch_dir(args.sketch)
+        if not sketch_dir.is_dir():
+            print(f"스케치 폴더가 없습니다: {sketch_dir}", file=sys.stderr)
+            return 2
+
+        build_dir = REPO_ROOT / ".build" / sketch_dir.name
+        libraries = read_demo_modules(sketch_dir, REPO_ROOT)
+        commands = build_commands(
+            cli,
+            sketch_dir,
+            build_dir,
+            make_fqbn(args.partition),
+            config,
+            libraries,
+            REPO_ROOT / "src",
+            args.upload,
+            port,
+        )
+
+        if args.dry_run:
+            for command in commands:
+                print(shlex.join([str(part) for part in command]))
+        else:
+            for index, command in enumerate(commands):
+                code, output = run_logged(command)
+                if code != 0:
+                    is_upload = args.upload and index == 1
+                    if is_upload:
+                        hint = port_busy_hint(output)
+                        if hint:
+                            print(hint, file=sys.stderr)
+                    return code
+
+    if args.monitor:
+        monitor_command = build_monitor_command(cli, config, port, args.baud)
+        if args.dry_run:
+            print(shlex.join([str(part) for part in monitor_command]))
+        else:
+            return run_interactive(monitor_command)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
