@@ -9,7 +9,7 @@
 ## Global Constraints
 
 - **병렬 충돌 절대 금지**: Wave 2의 5개 일감은 동시에 독립 워크트리(`feature/SCRUM-233`~`237`)에서 실행된다. 각 작업은 자기 `**Files:**`에 적힌 파일만 생성·수정한다. 기존 `.gitkeep` 파일, `tools/build.py`, `tools/test_host.py`, `test/test_harness.h`, `CLAUDE.md`는 건드리지 않는다.
-- **`library.properties` 규칙**: 새 Arduino 모듈의 `library.properties`에는 반드시 `author=golony6449`, `maintainer=golony6449`를 쓴다(`author=thermostat-esp32`는 Qwen 보안 검사에서 `auth`+16자 오탐을 유발하므로 금지).
+- **`library.properties` 규칙**: 새 Arduino 모듈의 `library.properties`에는 반드시 `author=golony6449`, `maintainer=golony6449`를 쓴다(16자 이상 긴 이름은 Qwen 보안 검사 오탐을 유발하므로 짧은 아이디를 사용한다).
 - **순수 C++17 원칙**: `src/core/`와 `src/sensor/sensor_logic.*`, `src/ui/waveshare43b/ui_view_model.h`는 `Arduino.h`, `millis()`, `WiFi`, `ESP` 등 하드웨어·프레임워크 의존성이 전혀 없어야 하며 PC 호스트 `g++ -std=c++17 -Wall -Wextra -Werror`로 컴파일·테스트되어야 한다.
 - **ESP32 코어·빌드**: 격리된 `esp32:esp32@3.3.12` + `python tools/build.py demos/<name>` 사용. `demos/<name>/modules.txt`로 필요한 `src/<mod>` 모듈만 선언한다.
 - **온도·시간 단위 통일**:
