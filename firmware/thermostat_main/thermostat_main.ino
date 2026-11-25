@@ -406,7 +406,7 @@ void print_status() {
       "[main] status mode=%u target=%.2fC repeat=%umin freeze=%.2fC "
       "temp_valid=%d temp=%.2fC source=%s heating=%d matter_heating=%d "
       "freeze_protect=%d commissioned=%d wifi=%d rtc=%d sht40=%d "
-      "epoch=%lld nvs_dirty=%d heap=%lu\n",
+      "epoch=%lld nvs_dirty=%d heap=%lu psram=%lu vsync_timeouts=%lu\n",
       static_cast<unsigned>(settings.zones[0].control.mode),
       static_cast<double>(settings.zones[0].control.target_temp_centi) / 100.0,
       static_cast<unsigned>(settings.zones[0].control.repeat_on_minutes),
@@ -417,7 +417,9 @@ void print_status() {
       output.freeze_protect_active ? 1 : 0, Matter.isDeviceCommissioned() ? 1 : 0,
       static_cast<int>(WiFi.status()), g_rtc_ok ? 1 : 0, g_sht40_ok ? 1 : 0,
       static_cast<long long>(epoch_sec), g_store.is_dirty() ? 1 : 0,
-      static_cast<unsigned long>(ESP.getFreeHeap()));
+      static_cast<unsigned long>(ESP.getFreeHeap()),
+      static_cast<unsigned long>(ESP.getFreePsram()),
+      static_cast<unsigned long>(thermostat::ui::lvgl_port_vsync_timeouts()));
 }
 
 void print_pairing_codes() {
@@ -574,6 +576,10 @@ void init_matter() {
 void init_display() {
   if (!g_board.init()) {
     Serial.println("[main] board init failed (display stays off)");
+    return;
+  }
+  if (!thermostat::ui::lvgl_port_prepare_lcd(g_board.getLCD())) {
+    Serial.println("[main] lcd frame buffer config failed (display stays off)");
     return;
   }
   if (!g_board.begin()) {

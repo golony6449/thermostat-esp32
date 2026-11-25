@@ -187,9 +187,10 @@ void connect_wifi() {
 }
 
 void log_memory() {
-  Serial.printf("[03_ui] heap_free=%u psram_free=%u\n",
+  Serial.printf("[03_ui] heap_free=%u psram_free=%u vsync_timeouts=%u\n",
                 static_cast<unsigned>(ESP.getFreeHeap()),
-                static_cast<unsigned>(ESP.getFreePsram()));
+                static_cast<unsigned>(ESP.getFreePsram()),
+                static_cast<unsigned>(thermostat::ui::lvgl_port_vsync_timeouts()));
   if (wifi_credentials_configured()) {
     Serial.printf("[03_ui] wifi_status=%d rssi=%d\n",
                   static_cast<int>(WiFi.status()),
@@ -213,6 +214,10 @@ void setup() {
 
   if (!g_board.init()) {
     Serial.println("[03_ui] board init failed (display stays off)");
+    return;
+  }
+  if (!thermostat::ui::lvgl_port_prepare_lcd(g_board.getLCD())) {
+    Serial.println("[03_ui] lcd frame buffer config failed (display stays off)");
     return;
   }
   if (!g_board.begin()) {
