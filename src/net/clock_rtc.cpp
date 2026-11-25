@@ -5,6 +5,7 @@
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <driver/i2c.h>
 #include <sys/time.h>
 
 #include <ctime>
@@ -147,17 +148,36 @@ bool bcd_digits_valid(uint8_t value) {
 // Anything below 2023-11-14 means SNTP has not delivered a real time yet.
 constexpr int64_t kSaneEpochSec = 1700000000;
 
+// Bounded transfer timeout: a missing RTC must not hang the boot sequence.
+TickType_t i2c_timeout_ticks() { return pdMS_TO_TICKS(50); }
+
+// One register-address byte plus the payload. Two transactions used by the
+// firmware are 1 byte (Control_1) and 7 bytes (time block), so 16 is ample.
+constexpr size_t kMaxRegisterWriteLen = 16;
+
+// Probes a 7-bit address with a start + address + stop transaction.
+bool i2c_address_acks(i2c_port_t port, uint8_t addr) {
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  if (cmd == nullptr) {
+    return false;
+  }
+  i2c_master_start(cmd);
+  i2c_master_write_byte(
+      cmd, static_cast<uint8_t>((addr << 1) | I2C_MASTER_WRITE), true);
+  i2c_master_stop(cmd);
+  const esp_err_t err = i2c_master_cmd_begin(port, cmd, i2c_timeout_ticks());
+  i2c_cmd_link_delete(cmd);
+  return err == ESP_OK;
+}
+
 }  // namespace
 
-bool ClockRtc::begin(TwoWire& wire, uint8_t addr) {
-  wire_ = &wire;
+bool ClockRtc::begin(i2c_port_t port, uint8_t addr) {
+  port_ = port;
   addr_ = addr;
   present_ = false;
 
-  // Bound every transfer so a missing RTC cannot hang the boot sequence.
-  (void)wire_->setTimeOut(50);
-  wire_->beginTransmission(addr_);
-  if (wire_->endTransmission() != 0) {
+  if (!i2c_address_acks(port_, addr_)) {
     return false;
   }
 
@@ -179,38 +199,26 @@ bool ClockRtc::begin(TwoWire& wire, uint8_t addr) {
 }
 
 bool ClockRtc::read_registers(uint8_t reg, uint8_t* data, size_t len) {
-  if (wire_ == nullptr || data == nullptr || len == 0 || len > 0xFF) {
+  if (data == nullptr || len == 0 || len > 0xFF) {
     return false;
   }
-  wire_->beginTransmission(addr_);
-  wire_->write(reg);
-  if (wire_->endTransmission(false) != 0) {
-    return false;
-  }
-  const size_t received = wire_->requestFrom(
-      static_cast<uint16_t>(addr_), static_cast<uint8_t>(len), true);
-  if (received != len) {
-    return false;
-  }
-  for (size_t i = 0; i < len; ++i) {
-    if (wire_->available() <= 0) {
-      return false;
-    }
-    data[i] = static_cast<uint8_t>(wire_->read());
-  }
-  return true;
+  const esp_err_t err = i2c_master_write_read_device(
+      port_, addr_, &reg, 1, data, len, i2c_timeout_ticks());
+  return err == ESP_OK;
 }
 
 bool ClockRtc::write_registers(uint8_t reg, const uint8_t* data, size_t len) {
-  if (wire_ == nullptr || data == nullptr || len == 0 || len > 0xFF) {
+  if (data == nullptr || len == 0 || len > kMaxRegisterWriteLen) {
     return false;
   }
-  wire_->beginTransmission(addr_);
-  wire_->write(reg);
+  uint8_t buffer[kMaxRegisterWriteLen + 1];
+  buffer[0] = reg;
   for (size_t i = 0; i < len; ++i) {
-    wire_->write(data[i]);
+    buffer[i + 1] = data[i];
   }
-  return wire_->endTransmission() == 0;
+  const esp_err_t err = i2c_master_write_to_device(
+      port_, addr_, buffer, len + 1, i2c_timeout_ticks());
+  return err == ESP_OK;
 }
 
 bool ClockRtc::read_rtc_epoch(int64_t* out_epoch_sec) {

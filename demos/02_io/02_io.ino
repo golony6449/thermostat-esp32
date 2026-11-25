@@ -1,10 +1,15 @@
 // Board I/O probe: SHT40 temperature/humidity, PCF85063A RTC + NTP, and one
 // home-server HTTP fetch. Runs without a sensor attached (graceful skip) and
 // without real credentials (secrets.h.example placeholders are detected).
+//
+// The I2C bus is driven with the ESP-IDF legacy master driver instead of
+// <Wire.h>, because ESP32_Display_Panel 1.0.0 (used by the integrated firmware)
+// installs the legacy driver and the two driver generations cannot coexist in
+// one binary.
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <Wire.h>
+#include <driver/i2c.h>
 
 #include <cstdio>
 
@@ -25,6 +30,7 @@ namespace {
 constexpr uint32_t kStatusIntervalMs = 10000;
 constexpr uint32_t kWifiTimeoutMs = 10000;
 constexpr int64_t kSaneEpochSec = 1700000000;  // 2023-11-14, i.e. SNTP synced
+constexpr i2c_port_t kSensorI2cPort = I2C_NUM_0;
 
 thermostat::sensor::Sht40Driver g_sht40;
 thermostat::net::ClockRtc g_clock;
@@ -34,12 +40,55 @@ bool g_sht40_ok = false;
 bool g_rtc_ok = false;
 uint32_t g_last_log_ms = 0;
 
+// Bounded transfer timeout so a wedged bus cannot hang the probe.
+TickType_t i2c_timeout_ticks() { return pdMS_TO_TICKS(50); }
+
+// Installs the legacy I2C master driver shared with the board peripherals.
+bool init_i2c() {
+  i2c_config_t config = {};
+  config.mode = I2C_MODE_MASTER;
+  config.sda_io_num = thermostat::pins::kI2cSda;
+  config.scl_io_num = thermostat::pins::kI2cScl;
+  config.sda_pullup_en = GPIO_PULLUP_ENABLE;
+  config.scl_pullup_en = GPIO_PULLUP_ENABLE;
+  config.master.clk_speed = thermostat::sensor::kSensorI2cClockHz;
+  config.clk_flags = 0;
+
+  esp_err_t err = i2c_param_config(kSensorI2cPort, &config);
+  if (err != ESP_OK) {
+    Serial.printf("[02_io] i2c_param_config failed: %d\n",
+                  static_cast<int>(err));
+    return false;
+  }
+  err = i2c_driver_install(kSensorI2cPort, I2C_MODE_MASTER, 0, 0, 0);
+  if (err != ESP_OK) {
+    Serial.printf("[02_io] i2c_driver_install failed: %d\n",
+                  static_cast<int>(err));
+    return false;
+  }
+  return true;
+}
+
+bool i2c_probe(uint8_t address) {
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  if (cmd == nullptr) {
+    return false;
+  }
+  i2c_master_start(cmd);
+  i2c_master_write_byte(
+      cmd, static_cast<uint8_t>((address << 1) | I2C_MASTER_WRITE), true);
+  i2c_master_stop(cmd);
+  const esp_err_t err =
+      i2c_master_cmd_begin(kSensorI2cPort, cmd, i2c_timeout_ticks());
+  i2c_cmd_link_delete(cmd);
+  return err == ESP_OK;
+}
+
 void scan_i2c_bus() {
   Serial.println("[02_io] I2C scan:");
   uint8_t found = 0;
   for (uint8_t address = 1; address < 127; ++address) {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0) {
+    if (i2c_probe(address)) {
       Serial.printf("[02_io]   found 0x%02X\n", address);
       ++found;
     }
@@ -185,33 +234,35 @@ void setup() {
   Serial.println(
       "[02_io] boot: SHT40 + PCF85063A clock + home-server probe");
 
-  Wire.begin(thermostat::pins::kI2cSda, thermostat::pins::kI2cScl);
-  Wire.setClock(thermostat::sensor::kSensorI2cClockHz);
-  scan_i2c_bus();
-
-  g_sht40_ok = g_sht40.begin(Wire);
-  if (g_sht40_ok) {
-    Serial.printf("[02_io] SHT40 detected at 0x%02X\n", g_sht40.address());
+  if (!init_i2c()) {
+    Serial.println("[02_io] I2C init failed; skip sensor and RTC probes");
   } else {
-    Serial.println("[02_io] SHT40 not detected (graceful skip)");
-  }
+    scan_i2c_bus();
 
-  g_rtc_ok = g_clock.begin(Wire);
-  if (!g_rtc_ok) {
-    Serial.println("[02_io] RTC PCF85063A not detected (graceful skip)");
-  } else {
-    int64_t rtc_epoch = 0;
-    if (g_clock.read_rtc_epoch(&rtc_epoch)) {
-      print_epoch_utc("[02_io] RTC time", rtc_epoch);
-      if (g_clock.restore_system_time_from_rtc()) {
-        Serial.println("[02_io] system time restored from RTC");
-      } else {
-        Serial.println("[02_io] system time restore from RTC failed");
-      }
+    g_sht40_ok = g_sht40.begin(kSensorI2cPort);
+    if (g_sht40_ok) {
+      Serial.printf("[02_io] SHT40 detected at 0x%02X\n", g_sht40.address());
     } else {
-      Serial.println(
-          "[02_io] RTC time invalid (OS bit set, corrupt registers or read "
-          "error)");
+      Serial.println("[02_io] SHT40 not detected (graceful skip)");
+    }
+
+    g_rtc_ok = g_clock.begin(kSensorI2cPort);
+    if (!g_rtc_ok) {
+      Serial.println("[02_io] RTC PCF85063A not detected (graceful skip)");
+    } else {
+      int64_t rtc_epoch = 0;
+      if (g_clock.read_rtc_epoch(&rtc_epoch)) {
+        print_epoch_utc("[02_io] RTC time", rtc_epoch);
+        if (g_clock.restore_system_time_from_rtc()) {
+          Serial.println("[02_io] system time restored from RTC");
+        } else {
+          Serial.println("[02_io] system time restore from RTC failed");
+        }
+      } else {
+        Serial.println(
+            "[02_io] RTC time invalid (OS bit set, corrupt registers or read "
+            "error)");
+      }
     }
   }
 

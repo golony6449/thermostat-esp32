@@ -6,7 +6,7 @@
 #include "thermostat_sensor_hw.h"
 
 #ifdef ARDUINO
-#include <Wire.h>
+#include <driver/i2c.h>
 #endif
 
 namespace thermostat::sensor {
@@ -24,21 +24,30 @@ bool sht40_decode_frame(const uint8_t frame[kSht40FrameSize],
 
 #ifdef ARDUINO
 
-// Minimal SHT40 driver on top of Wire (no external library).
+// Minimal SHT40 driver on top of the ESP-IDF legacy I2C master driver.
+//
+// The legacy driver is deliberately used instead of <Wire.h>: the Waveshare
+// board is brought up with ESP32_Display_Panel 1.0.0, which installs the
+// legacy driver on I2C_NUM_0. Arduino's Wire links the new i2c_master driver
+// and the ESP-IDF panics on boot when both driver generations are linked
+// ("CONFLICT! driver_ng is not allowed to be used with the legacy driver").
 //
 // A missing sensor must never crash or block the firmware: `begin()` returns
 // false when the address is not acknowledged and `read()` returns false on
 // NACK, short reads or CRC errors.
 class Sht40Driver {
  public:
-  bool begin(TwoWire& wire, uint8_t addr = kSht40Address);
+  // Probes `addr` with a bounded address-only transfer. The legacy driver on
+  // `port` must already be installed (the board bring-up does that).
+  bool begin(i2c_port_t port = I2C_NUM_0, uint8_t addr = kSht40Address);
   bool read(int16_t* out_temp_centi, uint16_t* out_rh_centi);
 
   bool is_present() const { return present_; }
   uint8_t address() const { return addr_; }
+  i2c_port_t port() const { return port_; }
 
  private:
-  TwoWire* wire_ = nullptr;
+  i2c_port_t port_ = I2C_NUM_0;
   uint8_t addr_ = kSht40Address;
   bool present_ = false;
 };
