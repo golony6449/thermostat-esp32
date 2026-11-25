@@ -4,7 +4,7 @@
 #include <cstdint>
 
 #ifdef ARDUINO
-#include <Wire.h>
+#include <driver/i2c.h>
 #endif
 
 namespace thermostat::net {
@@ -49,9 +49,14 @@ bool epoch_to_utc_datetime(int64_t epoch_sec, UtcDateTime* out);
 //
 // The RTC keeps UTC across reboots, so the firmware can restore wall-clock time
 // before Wi-Fi is up. All methods degrade gracefully when the chip is missing.
+//
+// The chip is accessed through the ESP-IDF legacy I2C master driver on a shared
+// port (the Waveshare 4.3B bring-up installs it for touch/IO expander use).
+// <Wire.h> must not be linked into the same binary: it pulls in the new
+// i2c_master driver and ESP-IDF panics on boot when both generations coexist.
 class ClockRtc {
  public:
-  bool begin(TwoWire& wire, uint8_t addr = kPcf85063aAddress);
+  bool begin(i2c_port_t port = I2C_NUM_0, uint8_t addr = kPcf85063aAddress);
   bool read_rtc_epoch(int64_t* out_epoch_sec);
   bool write_rtc_epoch(int64_t epoch_sec);
   bool sync_ntp_and_save(const char* ntp_server = "pool.ntp.org",
@@ -61,12 +66,13 @@ class ClockRtc {
 
   bool is_present() const { return present_; }
   uint8_t address() const { return addr_; }
+  i2c_port_t port() const { return port_; }
 
  private:
   bool read_registers(uint8_t reg, uint8_t* data, size_t len);
   bool write_registers(uint8_t reg, const uint8_t* data, size_t len);
 
-  TwoWire* wire_ = nullptr;
+  i2c_port_t port_ = I2C_NUM_0;
   uint8_t addr_ = kPcf85063aAddress;
   bool present_ = false;
 };

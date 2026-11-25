@@ -5,6 +5,7 @@
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <driver/i2c.h>
 #endif
 
 namespace thermostat::sensor {
@@ -64,17 +65,34 @@ bool sht40_decode_frame(const uint8_t frame[kSht40FrameSize],
 }
 
 #ifdef ARDUINO
+namespace {
 
-bool Sht40Driver::begin(TwoWire& wire, uint8_t addr) {
-  wire_ = &wire;
+// Bounded transfer timeout: a missing or wedged sensor must not hang boot.
+TickType_t i2c_timeout_ticks() { return pdMS_TO_TICKS(50); }
+
+// Probes a 7-bit address with a start + address + stop transaction. The
+// hardware reports a NACK (absent device) as an error, so this never blocks
+// longer than the timeout above.
+bool i2c_address_acks(i2c_port_t port, uint8_t addr) {
+  i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+  if (cmd == nullptr) {
+    return false;
+  }
+  i2c_master_start(cmd);
+  i2c_master_write_byte(
+      cmd, static_cast<uint8_t>((addr << 1) | I2C_MASTER_WRITE), true);
+  i2c_master_stop(cmd);
+  const esp_err_t err = i2c_master_cmd_begin(port, cmd, i2c_timeout_ticks());
+  i2c_cmd_link_delete(cmd);
+  return err == ESP_OK;
+}
+
+}  // namespace
+
+bool Sht40Driver::begin(i2c_port_t port, uint8_t addr) {
+  port_ = port;
   addr_ = addr;
-  present_ = false;
-
-  // Bound every transfer so a missing or wedged sensor cannot hang the boot
-  // sequence (the ESP32 Wire default timeout is much longer).
-  (void)wire_->setTimeOut(50);
-  wire_->beginTransmission(addr_);
-  present_ = (wire_->endTransmission() == 0);
+  present_ = i2c_address_acks(port_, addr_);
   return present_;
 }
 
@@ -82,29 +100,24 @@ bool Sht40Driver::read(int16_t* out_temp_centi, uint16_t* out_rh_centi) {
   if (out_temp_centi == nullptr || out_rh_centi == nullptr) {
     return false;
   }
-  if (wire_ == nullptr || !present_) {
+  if (!present_) {
     return false;
   }
 
-  wire_->beginTransmission(addr_);
-  wire_->write(kSht40CmdMeasureHighPrecision);
-  if (wire_->endTransmission() != 0) {
+  // High-precision measurement: command, conversion delay, 6-byte frame.
+  const uint8_t command = kSht40CmdMeasureHighPrecision;
+  esp_err_t err = i2c_master_write_to_device(port_, addr_, &command, 1,
+                                             i2c_timeout_ticks());
+  if (err != ESP_OK) {
     return false;
   }
   delay(kSht40MeasureDelayMs);
 
-  const size_t received = wire_->requestFrom(
-      static_cast<uint16_t>(addr_), static_cast<uint8_t>(kSht40FrameSize), true);
-  if (received != static_cast<size_t>(kSht40FrameSize)) {
+  uint8_t frame[kSht40FrameSize] = {};
+  err = i2c_master_read_from_device(port_, addr_, frame, kSht40FrameSize,
+                                    i2c_timeout_ticks());
+  if (err != ESP_OK) {
     return false;
-  }
-
-  uint8_t frame[kSht40FrameSize];
-  for (size_t i = 0; i < static_cast<size_t>(kSht40FrameSize); ++i) {
-    if (wire_->available() <= 0) {
-      return false;
-    }
-    frame[i] = static_cast<uint8_t>(wire_->read());
   }
   return sht40_decode_frame(frame, out_temp_centi, out_rh_centi);
 }
