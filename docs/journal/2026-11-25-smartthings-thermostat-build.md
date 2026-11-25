@@ -173,7 +173,7 @@ UI 다음으로 설정 저장 데모(`demos/04_storage`)를 올리려는데 사�
 
 ---
 
-## 7. "근데 화면이 까맣게 나와" — 펌웨어 통합과 임베디드 지뢰 3개 (`SCRUM-242`)
+## 7. "근데 화면이 까맣게 나와" — 펌웨어 통합과 임베디드 지뢰 4개 (`SCRUM-242`)
 
 Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
 
@@ -182,7 +182,7 @@ Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
 - 사용자: **"아 그럼 펌웨어 통합까지 하자 워크플로 돌려줘"**
 - 확인해 보니 그사이 다른 세션에서 홈서버 센서 API(`SCRUM-239`, `GET /api/thermostat/sensors`, 테스트 62개 추가)도 머지 완료되어 **`SCRUM-242`의 선행 일감 6건이 전부 열려 있었다.**
 
-단순히 모듈을 합치면 끝날 줄 알았지만, **합치는 순간에만 터지는 임베디드 지뢰 3개**가 기다리고 있었다.
+단순히 모듈을 합치면 끝날 줄 알았지만, **합치는 순간에만 터지는 임베디드 지뢰 4개**가 기다리고 있었다.
 
 ### 7.1 지뢰 ①: ESP-IDF 5.5 I2C 신·구 드라이버 부팅 패닉 (설계 단계 사전 차단)
 
@@ -214,14 +214,44 @@ Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
   2. **범인 ② — `#include <Matter.h>` 한 줄의 위치:** `thermostat_main.ino` 맨 위에 `#include <Matter.h>`가 있었다. Arduino CLI의 라이브러리 탐지는 파일을 위에서 아래로 훑다 못 찾은 헤더를 1개 만날 때마다 **파일 맨 위부터 `g++ -E`를 처음부터 다시 돌린다.** 그 결과 아래쪽 라이브러리 15개를 하나씩 찾을 때마다 **40초짜리 `<Matter.h>` 전처리를 15번(10분 이상) 반복**하고 있었다!
      - **조치:** `#include <Matter.h>`와 `#include "thermostat_matter.h"`를 `#include` 목록 맨 끝으로 2줄 이동. 11분 동안 0개였던 탐지가 수정 직후 5분 만에 뚫리고 분당 20~25개 속도로 빠르게 진행되기 시작했다(`실측`).
 
-> 책 소재: **"`#include` 두 줄의 순서가 빌드 시간을 10분 줄인다."** 웹 번들러(Vite, esbuild)에 익숙한 개발자에게 C/C++ 전처리기와 Arduino CLI의 라이브러리 탐색 방식이 얼마나 무식하고 정직하게 동작하는지 보여 주는 최고의 트러블슈팅 에피소드다.
+### 7.4 지뢰 ④: 마지막 링크 1초에 터진 Windows 대소문자 충돌 (`Matter` vs `matter`)
+
+모든 소스 파일이 에러 없이 컴파일을 마치고 마지막 링커(`ld.exe`) 단계에 들어간 순간, `multiple definition of ArduinoMatter::...` 오류가 쏟아졌다(`실측`).
+
+- **원인:** ESP32 내장 라이브러리 폴더 이름은 `Matter`(대문자 `M`), 우리 프로젝트 폴더 이름은 `src/matter`(소문자 `m`)였다. 대소문자를 구분하지 않는 Windows 파일시스템에서는 둘의 빌드 아카이브 `libraries\Matter\objs.a`와 `libraries\matter\objs.a`가 **같은 파일 하나**로 덮어씌워졌는데, `arduino-cli`는 둘을 서로 다른 라이브러리로 보고 같은 `objs.a`를 링커 명령줄에 두 번 넘겼다!
+- **해결:** `src/matter`를 `src/matter_ep`로 개명(`git mv`)하고 `modules.txt` 두 줄만 수정. 캐시된 `.o` 423개를 재사용해 깔끔하게 링크에 성공했다(`실측`):
+  - **통합 펌웨어 최종 크기 (`실측`):** Flash **`2,324,499 B (73%)`** / 3MB OTA 파티션, RAM **`163,664 B (49%)`** / 327KB.
+
+### 7.5 통합 펌웨어 첫 실기 부팅 — 화면, Matter, NTP, RTC가 한 몸으로
+
+- 사용자: "머지하고 업로드까지 해줘"
+- 완성된 통합 바이너리를 `COM9` 보드에 14.1초 만에 올리고 시리얼 부팅 로그를 확인했다(`실측`):
+  ```text
+  [main] SmartThings DIY thermostat - integrated firmware (SCRUM-242)
+  [main] NVS load status=1
+  [main] already commissioned
+  [main] UI ready
+  [main] SHT40 not detected (graceful skip)
+  [main] NTP sync started (KST)
+  [main] RTC saved from system time
+  ```
+- **한 방에 확인된 것 4가지 (`실측`):**
+  1. I2C 신·구 드라이버 패닉 **ZERO** — 설계 단계의 `<driver/i2c.h>` 통일이 그대로 적중했다.
+  2. `already commissioned` — 아까 등록해 둔 SmartThings 허브 페어링이 NVS에서 살아남아 재등록 없이 Wi-Fi·Matter에 자동 복귀했다.
+  3. `UI ready` — 800×480 LVGL 터치 화면이 Matter 스택과 동시에 정상 기동했다.
+  4. `NTP sync started (KST)` → `RTC saved from system time` — Wi-Fi 연결 직후 한국 시각을 받아 보드 RTC까지 자동 저장했다.
+- `demos/02_io` 구형 I2C 회귀 빌드(`Flash 32%, RAM 14%`), 호스트 C++ 7개 스위트 **93/93 PASS**, Python 도구 테스트 **31/31 OK**까지 모두 확인했다.
+- 마지막에 GitHub PR 생성 API가 일시 502 / GraphQL 500 장애를 보여, 사용자 승인 하에 `main`에 `--no-ff` 머지 커밋(`87b894d`)으로 반영하고 `SCRUM-242`를 `완료` 처리했다. DeepSeek 비용은 약 `$0.23 USD`(`$9.52 → $9.29`, `실측`).
+
+> 책 소재: **"`#include` 두 줄의 순서가 빌드 시간을 10분 줄이고, 소문자 폴더 이름 하나가 Windows 링커를 멈춘다."** 웹 번들러(Vite, esbuild)에 익숙한 개발자에게 C/C++ 전처리기·Arduino CLI·Windows 파일시스템 대소문자 무시가 어떻게 맞물려 폭발하는지 보여 주는 최고의 트러블슈팅 에피소드다.
 
 > 웹 개발자 시선:
 > - I2C 신·구 드라이버 충돌 = 하나의 앱에 호환 안 되는 React 17과 React 18 런타임이 동시에 번들되어 부팅 크래시 나는 상황.
 > - `portMUX_TYPE` pending 이벤트 + `loop()` 단일 소비자 = Redux/Flux 단방향 데이터 흐름. 여러 곳에서 상태를 직접 고치지 않고 액션(이벤트)만 던져 메인 루프가 한 번에 처리한다.
-> - LVGL `examples`/`demos` 제외 = `node_modules`에서 테스트·스토리북 파일까지 전부 Babel/TypeScript로 트랜스파일하고 있던 `tsconfig` `exclude` 누락을 고친 것.
+> - LVGL `examples`/`demos` 제외 = `node_modules`에서 테스트·스토리북 파일까지 전부 트랜스파일하고 있던 `tsconfig` `exclude` 누락을 고친 것.
+> - `Matter` vs `matter` 링크 충돌 = 리눅스 CI에서는 통과하는데 Windows/macOS 개발자 노트북에서만 파일명 대소문자 충돌로 터지는 고전 버그.
 
-> 교훈: 따로 떼어 놓고 잘 도는 모듈을 합칠 때 비로소 나타나는 버그가 있다(드라이버 버전 충돌, 스레드 교차 락, 전처리 시간 곱셈 폭발). 통합은 단순 복붙이 아니라 별도의 설계 단계다.
+> 교훈: 따로 떼어 놓고 잘 도는 모듈을 합칠 때 비로소 나타나는 버그가 있다(드라이버 버전 충돌, 스레드 교차 락, 전처리 시간 곱셈 폭발, OS 대소문자 충돌). 통합은 단순 복붙이 아니라 별도의 설계 단계다.
 
 ---
 
@@ -230,22 +260,23 @@ Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
 | 항목 | 결과 | 근거 |
 |---|---|---|
 | 빌드 환경 | 프로젝트 격리 `arduino-cli.yaml` + `esp32:esp32@3.3.12` + 경량 격리 `sketchbook`(`lvgl` 192파일) + WinLibs `g++ 16.2.0` | `실측` |
-| 보드 메모리 | `03_ui`(Wi-Fi+LVGL): `heap 170KB / PSRAM 5.8MB`, `01_matter`(등록 후 BLE 해제): `heap 169KB / PSRAM 8.3MB` | `실측` |
+| 통합 펌웨어 크기 | Flash `2,324,499 B (73%)` / 3MB OTA 파티션, RAM `163,664 B (49%)` | `실측` |
+| 보드 메모리(단독 데모) | `03_ui`(Wi-Fi+LVGL): `heap 170KB / PSRAM 5.8MB`, `01_matter`(등록 후 BLE 해제): `heap 169KB / PSRAM 8.3MB` | `실측` |
 | 반복 모드 N=60과 데드맨 | 반복 모드(`N=60` 포함)와 최저온도 보호 연속 난방에도 50분 유지 신호 펄스 적용 | 설계 확정, 테스트 PASS |
 | 터치 UI 레이아웃 | 800×480 상하 분할, 48px 대형 한글 폰트, 고대비 버튼, 반복 시 `N분` 표시, 꺼짐 시 `-` 및 `+/-` 잠금 | `실측`("잘 되네.") |
 | NVS 설정 저장 | 5초 디바운스 + 30초 쿨다운 + CRC-32 + 스키마 버전, 재부팅 복원 확인 | `실측` |
 | SmartThings Matter 지원 | `온도`, `상태`, `온도조절모드(꺼짐/난방)`, `난방온도 설정` 표시 + 양방향 동기화 + **`ThermostatRunningState` 루틴 조건 & 70분 유지 조건 지원** → 보조 센서 불필요 | `실측` |
-| I2C 버스 전략 | `<Wire.h>` 완전 제거, `ESP32_Display_Panel`과 `<driver/i2c.h>` `I2C_NUM_0` 공유 | `문헌 기반`(IDF 5.5 소스 확인) |
+| I2C 버스 전략 | `<Wire.h>` 완전 제거, `ESP32_Display_Panel`과 `<driver/i2c.h>` `I2C_NUM_0` 공유 (`src/matter` → `src/matter_ep` Windows 충돌 해결) | `실측`(통합 펌웨어 부팅·RTC 저장 확인) |
 | 홈서버 센서 API | `Home-Dashboard` `GET /api/thermostat/sensors` 구현·머지 완료(`SCRUM-239`, 테스트 62개) | PR #28 머지 |
 
 ---
 
-## 오늘 완료된 일감과 남은 일감
+## 완료된 일감과 남은 일감
 
-- **오늘 `완료` (11건):** `SCRUM-232`(뼈대), `233`(Matter 스파이크), `234`(core), `235`(센서 로직), `236`(보드 I/O), `237`(터치 UI), `238`(NVS), `239`(홈서버 API), `248~251`(터치 UI 실기 개선 4건)
-- **진행 중 (1건):** `SCRUM-242`(펌웨어 통합 — 코드·호스트 테스트 93/93 완료, 경량 LVGL 첫 풀 빌드 진행 중 → 완료 후 PR·머지·`COM9` 실기 확인 예정)
+- **에이전트 개발 일감 전원 `완료` (12건):** `SCRUM-232`(뼈대), `233`(Matter 스파이크), `234`(core), `235`(센서 로직), `236`(보드 I/O), `237`(터치 UI), `238`(NVS), `239`(홈서버 API), `242`(펌웨어 통합 — 머지·`COM9` 실기 부팅 완료), `248~251`(터치 UI 실기 개선 4건)
 - **신규 분리 (1건):** `SCRUM-254`(유지 신호 최소 대기 펄스 길이 `p <sec>` 실측)
 - **사용자 현장 작업 대기 (3건):** `SCRUM-231`(구동기 NO 관찰 시험·벽 조절기 전압·테이프 접속부 사진), `SCRUM-241`(스마트 플러그 설치·루틴 구성), `SCRUM-243`(실기 난방·데드맨 시험)
+- **후속 확장 (`notyet`, 5건):** `SCRUM-240`(홈서버 알림), `244`(M5Dial 포팅), `245`(Edge 드라이버), `246`(다중 존), `247`(시간 비례 제어)
 
 ---
 
@@ -271,6 +302,7 @@ Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
 | 6.2 | 최대 리스크였던 Matter `ThermostatRunningState`와 "70분 동안 유지" 조건이 SmartThings 순정으로 한 번에 통과한 순간("상태 있어. 70분 설정도 가능해.") |
 | 6.1 | Matter 커미셔닝이 끝나자 BLE RAM이 자동 반환되며 `heap_free`가 97KB에서 169KB로 72KB 껑충 뛴 실측 |
 | 7.3 | `#include <Matter.h>` 두 줄을 맨 아래로 옮기자 11분 멈춰 있던 라이브러리 탐색이 5분 만에 뚫린 순간 |
+| 7.5 | 통합 펌웨어 첫 부팅에서 I2C 패닉 없이 `already commissioned` → `UI ready` → `NTP sync started (KST)` → `RTC saved`까지 한 번에 통과한 순간 |
 
 ---
 
@@ -282,4 +314,4 @@ Matter 등록까지 마친 뒤 보드를 본 사용자가 말했다.
   - **14장 손가락이 찾아낸 버그 넷** (`SCRUM-237`, `248~251` — LVGL 다크 버튼, 상하 분할, 48px 한글 폰트, 모드별 메인 표시)
   - **15장 전원을 뽑아도 기억하는 법: NVS** (`SCRUM-238` — 플래시 수명, 5초 디바운스, CRC-32, 재부팅 복원)
   - **16장 SmartThings에 내가 만든 온도조절기가 떴다** (`SCRUM-233` — 5GHz 함정, BLE QR, `ThermostatRunningState` + 70분 루틴 실측)
-  - **17장 합치는 순간 터지는 세 개의 지뢰** (`SCRUM-242` — IDF 5.5 I2C 드라이버 충돌, 3태스크 교차 락, LVGL 500개 예제와 `#include <Matter.h>` 2줄의 비밀)
+  - **17장 합치는 순간 터지는 네 개의 지뢰** (`SCRUM-242` — IDF 5.5 I2C 드라이버 충돌, 3태스크 교차 락, LVGL 500개 예제·`#include <Matter.h>` 2줄, Windows `Matter`/`matter` 링크 충돌과 첫 통합 부팅)
