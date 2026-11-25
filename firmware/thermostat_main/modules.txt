@@ -2,6 +2,6 @@ src/core
 src/sensor
 src/net
 src/storage
-src/matter
+src/matter_ep
 src/ui/waveshare43b
 src/app

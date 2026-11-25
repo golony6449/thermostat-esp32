@@ -26,7 +26,6 @@
 // Wi-Fi from secrets.h.
 
 #include <Arduino.h>
-#include <Matter.h>
 #include <WiFi.h>
 #include <esp_display_panel.hpp>
 #include <lvgl.h>
@@ -41,10 +40,13 @@
 #include "sht40_driver.h"
 #include "thermostat_net.h"
 #include "thermostat_storage.h"
-#include "thermostat_matter.h"
 #include "lvgl_port.h"
 #include "thermostat_ui.h"
 #include "thermostat_app.h"
+// Keep Matter headers last so arduino-cli discovers all other libraries before
+// paying the heavy esp_matter preprocessor cost once.
+#include <Matter.h>
+#include "thermostat_matter.h"
 
 // Real credentials live in src/config/secrets.h (gitignored). Fall back to the
 // committed placeholder template so the sketch always compiles.
