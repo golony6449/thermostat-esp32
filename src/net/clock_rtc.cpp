@@ -300,15 +300,19 @@ bool ClockRtc::sync_ntp_and_save(const char* ntp_server, uint32_t timeout_ms) {
   return false;
 }
 
+bool ClockRtc::set_system_epoch(int64_t epoch_sec) {
+  struct timeval tv = {};
+  tv.tv_sec = static_cast<time_t>(epoch_sec);
+  tv.tv_usec = 0;
+  return settimeofday(&tv, nullptr) == 0;
+}
+
 bool ClockRtc::restore_system_time_from_rtc() {
   int64_t epoch_sec = 0;
   if (!read_rtc_epoch(&epoch_sec)) {
     return false;
   }
-  struct timeval tv = {};
-  tv.tv_sec = static_cast<time_t>(epoch_sec);
-  tv.tv_usec = 0;
-  return settimeofday(&tv, nullptr) == 0;
+  return set_system_epoch(epoch_sec);
 }
 
 int64_t ClockRtc::now_epoch_sec() const {

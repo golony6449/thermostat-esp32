@@ -28,6 +28,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_display_panel.hpp>
+#include <esp_sntp.h>
 #include <lvgl.h>
 
 #include <cstdio>
@@ -71,6 +72,8 @@ using thermostat::matter::MatterThermostatCallbacks;
 using thermostat::matter::ThermostatEndpoint;
 using thermostat::net::ClockRtc;
 using thermostat::net::HomeServerClient;
+using thermostat::net::HomeTimePolicyInput;
+using thermostat::net::should_fetch_home_time;
 using thermostat::sensor::Sht40Driver;
 using thermostat::storage::DeviceSettings;
 using thermostat::storage::NvsSettingsStore;
@@ -101,6 +104,20 @@ MatterButton g_boot_button;
 bool g_ui_ready = false;
 bool g_sht40_ok = false;
 bool g_rtc_ok = false;
+
+// ---------------------------------------------------------------------------
+// Time-source state (loop task only). SNTP reports COMPLETED exactly once
+// after a successful sync and then falls back to RESET, so the loop latches
+// the completion; the home-server time policy reads these flags and must never
+// override an NTP-synchronised clock.
+// ---------------------------------------------------------------------------
+
+bool g_ntp_started = false;
+uint64_t g_ntp_started_ms = 0;  // millis() when configTime() was called
+bool g_ntp_synced = false;      // latched SNTP_SYNC_STATUS_COMPLETED
+bool g_home_time_applied = false;
+bool g_home_time_attempted = false;
+uint64_t g_home_time_last_attempt_ms = 0;
 
 // ---------------------------------------------------------------------------
 // Cross-task pending events. The structs are only written by the CHIP/LVGL
@@ -269,15 +286,24 @@ void configure_home_server() {
 }
 
 void poll_network_and_time(uint64_t now_ms) {
-  static bool ntp_started = false;
   static bool rtc_synced = false;
   static uint64_t last_rtc_sync_ms = 0;
 
-  if (!ntp_started) {
+  if (!g_ntp_started) {
     // Non-blocking: SNTP keeps running in the background.
     configTime(9L * 3600L, 0, "pool.ntp.org");
-    ntp_started = true;
+    g_ntp_started = true;
+    g_ntp_started_ms = now_ms;
     Serial.println("[main] NTP sync started (KST)");
+  }
+
+  // sntp_get_sync_status() returns COMPLETED once and then RESET again, so a
+  // poll that skips this window would never see the sync. Latch it here; the
+  // home-time policy stops asking the home server as soon as this is true.
+  if (!g_ntp_synced &&
+      esp_sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+    g_ntp_synced = true;
+    Serial.println("[main] NTP sync completed");
   }
 
   const int64_t epoch_sec = g_clock.now_epoch_sec();
@@ -313,6 +339,59 @@ void poll_home_server(uint64_t now_ms) {
   if (!g_app.on_remote_sensors_json(result.body, g_clock.now_epoch_sec())) {
     Serial.printf("[main] home server JSON parse failed (%u bytes)\n",
                   static_cast<unsigned>(result.body.size()));
+  }
+}
+
+void poll_home_time(uint64_t now_ms) {
+  if (!g_home_server.configured()) {
+    return;
+  }
+
+  HomeTimePolicyInput policy;
+  policy.ntp_synced = g_ntp_synced;
+  policy.has_home_time = g_home_time_applied;
+  policy.now_ms = now_ms;
+  policy.ntp_started_ms = g_ntp_started_ms;
+  policy.has_attempted = g_home_time_attempted;
+  policy.last_attempt_ms = g_home_time_last_attempt_ms;
+  if (!should_fetch_home_time(policy)) {
+    return;
+  }
+
+  // Record the attempt before the request so a failing server is retried on
+  // the policy cadence, not on every loop iteration.
+  g_home_time_attempted = true;
+  g_home_time_last_attempt_ms = now_ms;
+
+  const HomeServerClient::FetchResult result = g_home_server.fetch_time();
+  if (!result.ok) {
+    Serial.printf("[main] home time fetch failed: %s\n", result.error.c_str());
+    return;
+  }
+  int64_t epoch_sec = 0;
+  if (!thermostat::sensor::parse_homeserver_time_json(result.body, &epoch_sec)) {
+    Serial.printf("[main] home time fetch failed: invalid response (%u bytes)\n",
+                  static_cast<unsigned>(result.body.size()));
+    return;
+  }
+  if (epoch_sec < kSaneEpochSec) {
+    Serial.printf("[main] home time fetch failed: implausible epoch=%lld\n",
+                  static_cast<long long>(epoch_sec));
+    return;
+  }
+  const int64_t diff_sec = epoch_sec - g_clock.now_epoch_sec();
+  if (!g_clock.set_system_epoch(epoch_sec)) {
+    Serial.println("[main] home time fetch failed: settimeofday failed");
+    return;
+  }
+  g_home_time_applied = true;
+  Serial.printf("[main] time set from home server epoch=%lld (diff=%llds)\n",
+                static_cast<long long>(epoch_sec),
+                static_cast<long long>(diff_sec));
+  // Keep the battery-backed RTC in step so a reboot before the next network
+  // connection still restores a sane clock.
+  if (g_rtc_ok) {
+    g_clock.write_rtc_epoch(epoch_sec);
   }
 }
 
@@ -406,6 +485,7 @@ void print_status() {
       "[main] status mode=%u target=%.2fC repeat=%umin freeze=%.2fC "
       "temp_valid=%d temp=%.2fC source=%s heating=%d matter_heating=%d "
       "freeze_protect=%d commissioned=%d wifi=%d rtc=%d sht40=%d "
+      "ntp_synced=%d home_time=%d "
       "epoch=%lld nvs_dirty=%d heap=%lu\n",
       static_cast<unsigned>(settings.zones[0].control.mode),
       static_cast<double>(settings.zones[0].control.target_temp_centi) / 100.0,
@@ -416,6 +496,7 @@ void print_status() {
       output.logical_heating ? 1 : 0, output.matter_heating ? 1 : 0,
       output.freeze_protect_active ? 1 : 0, Matter.isDeviceCommissioned() ? 1 : 0,
       static_cast<int>(WiFi.status()), g_rtc_ok ? 1 : 0, g_sht40_ok ? 1 : 0,
+      g_ntp_synced ? 1 : 0, g_home_time_applied ? 1 : 0,
       static_cast<long long>(epoch_sec), g_store.is_dirty() ? 1 : 0,
       static_cast<unsigned long>(ESP.getFreeHeap()));
 }
@@ -674,6 +755,7 @@ void loop() {
   if (wifi_connected) {
     poll_network_and_time(now_ms);
     poll_home_server(now_ms);
+    poll_home_time(now_ms);
   }
 
   poll_sht40(now_ms);
