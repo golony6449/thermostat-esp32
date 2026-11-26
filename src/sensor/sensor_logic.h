@@ -91,6 +91,14 @@ struct RemoteSensorReading {
 bool parse_homeserver_sensors_json(const std::string& json,
                                    std::vector<RemoteSensorReading>* out);
 
+// Parses GET /api/thermostat/time:
+//   { "now": "<ISO-8601 with offset>", "epoch": <int> }
+// Uses "now" (parse_iso8601_to_epoch); the integer "epoch" field is only
+// skipped so the wall-clock string is the single source of truth. Unknown keys
+// are skipped as well. Returns false on structural errors or when "now" is
+// missing/invalid; *out_epoch_sec is left untouched then.
+bool parse_homeserver_time_json(const std::string& json, int64_t* out_epoch_sec);
+
 enum class SourceMode : uint8_t {
   kBoardOnly = 0,
   kSingleRemote = 1,

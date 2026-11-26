@@ -772,6 +772,72 @@ bool parse_homeserver_sensors_json(const std::string& json,
   return found_sensors;
 }
 
+bool parse_homeserver_time_json(const std::string& json,
+                                int64_t* out_epoch_sec) {
+  if (out_epoch_sec == nullptr) {
+    return false;
+  }
+  JsonReader reader(json);
+  reader.skip_whitespace();
+  if (!reader.consume('{')) {
+    return false;
+  }
+  bool found_now = false;
+  int64_t parsed_epoch_sec = 0;
+  reader.skip_whitespace();
+  if (reader.consume('}')) {
+    // "now" is required.
+    return false;
+  }
+  while (true) {
+    reader.skip_whitespace();
+    std::string key;
+    if (!reader.parse_string(&key)) {
+      return false;
+    }
+    reader.skip_whitespace();
+    if (!reader.consume(':')) {
+      return false;
+    }
+    reader.skip_whitespace();
+    if (key == "now") {
+      if (found_now) {
+        return false;
+      }
+      found_now = true;
+      std::string now_text;
+      if (!reader.parse_string(&now_text)) {
+        return false;
+      }
+      // The home-server API always includes a timezone offset; refuse to guess
+      // one from the board's local time.
+      if (!parse_iso8601_to_epoch(now_text.c_str(), &parsed_epoch_sec)) {
+        return false;
+      }
+    } else {
+      // "epoch" and any future fields are skipped; the ISO string is the
+      // authoritative value.
+      if (!reader.skip_value()) {
+        return false;
+      }
+    }
+    reader.skip_whitespace();
+    if (reader.consume(',')) {
+      continue;
+    }
+    if (reader.consume('}')) {
+      break;
+    }
+    return false;
+  }
+  reader.skip_whitespace();
+  if (!reader.at_end() || !found_now) {
+    return false;
+  }
+  *out_epoch_sec = parsed_epoch_sec;
+  return true;
+}
+
 void SensorSelector::set_config(const SensorSelectionConfig& cfg) {
   config_ = cfg;
 }

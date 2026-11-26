@@ -10,6 +10,7 @@ namespace thermostat::net {
 namespace {
 
 constexpr const char* kSensorsPath = "/api/thermostat/sensors";
+constexpr const char* kTimePath = "/api/thermostat/time";
 constexpr const char* kApiKeyHeader = "X-API-Key";
 
 }  // namespace
@@ -25,17 +26,25 @@ void HomeServerClient::configure(const char* base_url, const char* api_key,
 }
 
 HomeServerClient::FetchResult HomeServerClient::fetch_sensors() {
+  return fetch_path(kSensorsPath);
+}
+
+HomeServerClient::FetchResult HomeServerClient::fetch_time() {
+  return fetch_path(kTimePath);
+}
+
+HomeServerClient::FetchResult HomeServerClient::fetch_path(const char* path) {
   FetchResult result;
   if (base_url_.empty()) {
     result.error = "home server URL is not configured";
     return result;
   }
-  if (WiFi.status() != WL_CONNECTED) {
-    result.error = "Wi-Fi is not connected";
-    return result;
-  }
+  // No WiFi.status() check: in CHIPoBLE builds Matter owns the STA interface
+  // and WiFi.status() may not report WL_CONNECTED while the link is usable.
+  // The caller only invokes this once it has judged the network connected;
+  // when there is no link the HTTP request fails into the error path below.
 
-  const std::string url = base_url_ + kSensorsPath;
+  const std::string url = base_url_ + path;
   HTTPClient http;
   http.setTimeout(timeout_ms_);
   if (!http.begin(String(url.c_str()))) {
