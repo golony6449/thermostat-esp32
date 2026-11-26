@@ -77,6 +77,7 @@ using thermostat::net::should_fetch_home_time;
 using thermostat::sensor::Sht40Driver;
 using thermostat::storage::DeviceSettings;
 using thermostat::storage::NvsSettingsStore;
+using thermostat::storage::SensorSourceSetting;
 using thermostat::ui::ThermostatUi;
 using thermostat::ui::UiCallbacks;
 using thermostat::ui::UiMode;
@@ -469,7 +470,10 @@ void print_help() {
   Serial.println("  sim <celsius>          센서 대신 시뮬레이션 온도 사용 (예: sim 18.5)");
   Serial.println("  sim off                시뮬레이션 해제");
   Serial.println("  homeserver <url>       홈서버 주소 변경 (예: homeserver http://192.168.0.10)");
-  Serial.println("  flush                  NVS 설정 즉시 저장");
+  Serial.println("  sensor board           보드 센서 사용");
+  Serial.println("  sensor remote <id>     원격 센서 1개 사용 (예: sensor remote livingroom)");
+  Serial.println("  sensor avg <id> <id>.. 원격 센서 평균 사용 (최대 4개)");
+  Serial.println("  flush                 NVS 설정 즉시 저장");
   Serial.println("  reboot                 재부팅");
   Serial.println("  decommission           Matter 커미셔닝 해제");
   Serial.println("  help                   이 도움말");
@@ -560,6 +564,40 @@ void handle_command(char* line) {
     configure_home_server();
     Serial.printf("[main] home server = %s\n",
                   g_app.settings().homeserver_url);
+    return;
+  }
+  if (strcmp(command, "sensor") == 0) {
+    const char* kind = strtok(nullptr, " \t");
+    SensorSourceSetting source = SensorSourceSetting::kBoardOnly;
+    if (kind != nullptr && strcmp(kind, "remote") == 0) {
+      source = SensorSourceSetting::kSingleRemote;
+    } else if (kind != nullptr && strcmp(kind, "avg") == 0) {
+      source = SensorSourceSetting::kAverageRemote;
+    } else if (kind == nullptr || strcmp(kind, "board") != 0) {
+      Serial.println("[main] usage: sensor board | sensor remote <id> | sensor avg <id> <id>..");
+      return;
+    }
+    const char* ids[thermostat::storage::kMaxSelectedRemoteSensors] = {};
+    uint8_t count = 0;
+    const char* id = nullptr;
+    while ((id = strtok(nullptr, " \t")) != nullptr) {
+      if (count >= thermostat::storage::kMaxSelectedRemoteSensors) {
+        Serial.println("[main] sensor: too many ids (max 4)");
+        return;
+      }
+      ids[count++] = id;
+    }
+    if ((source == SensorSourceSetting::kSingleRemote && count != 1) ||
+        (source == SensorSourceSetting::kBoardOnly && count != 0)) {
+      Serial.println("[main] usage: sensor board | sensor remote <id> | sensor avg <id> <id>..");
+      return;
+    }
+    if (!g_app.set_sensor_source(source, ids, count)) {
+      Serial.println("[main] sensor: invalid selection");
+      return;
+    }
+    Serial.printf("[main] sensor source=%u count=%u\n",
+                  static_cast<unsigned>(source), static_cast<unsigned>(count));
     return;
   }
   if (strcmp(command, "flush") == 0) {
