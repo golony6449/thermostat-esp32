@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace thermostat::ui {
 
@@ -37,6 +38,70 @@ struct UiViewModel {
   char source_text[96] = "거실 센서 · 3분 전";
   char time_text[16] = "21:15";
 };
+
+// Which parts of the screen must be redrawn when the view model changes.
+// LVGL 8 invalidates a widget even when lv_label_set_text() or
+// lv_obj_set_style_*() is called with the value it already has, so the UI
+// layer compares the previous and next model and touches only dirty widgets.
+struct UiDirty {
+  bool current_temp = false;     // current_temp_centi, temp_valid
+  bool primary = false;          // mode, target_temp_centi, repeat_on_minutes
+  bool heating = false;          // heating_active
+  bool source = false;           // source_text (문자열 비교), source_severity
+  bool mode_buttons = false;     // mode
+  bool settings_values = false;  // repeat_on_minutes, freeze_protect_centi
+  bool time = false;             // time_text (문자열 비교)
+
+  bool any() const {
+    return current_temp || primary || heating || source || mode_buttons ||
+           settings_values || time;
+  }
+};
+
+// Marks every part dirty. Used for the first paint after begin() so no value
+// can be missed even when the incoming model matches the widget defaults.
+inline UiDirty ui_dirty_all() {
+  UiDirty dirty;
+  dirty.current_temp = true;
+  dirty.primary = true;
+  dirty.heating = true;
+  dirty.source = true;
+  dirty.mode_buttons = true;
+  dirty.settings_values = true;
+  dirty.time = true;
+  return dirty;
+}
+
+// The UiViewModel char arrays live inside separate copies, so comparing the
+// pointers would always report a change. Compare the contents instead.
+inline bool ui_text_equal(const char* left, const char* right) {
+  if (left == right) {
+    return true;
+  }
+  if (left == nullptr || right == nullptr) {
+    return false;
+  }
+  return std::strcmp(left, right) == 0;
+}
+
+inline UiDirty diff_view_model(const UiViewModel& prev,
+                               const UiViewModel& next) {
+  UiDirty dirty;
+  dirty.current_temp = prev.current_temp_centi != next.current_temp_centi ||
+                       prev.temp_valid != next.temp_valid;
+  dirty.primary = prev.mode != next.mode ||
+                  prev.target_temp_centi != next.target_temp_centi ||
+                  prev.repeat_on_minutes != next.repeat_on_minutes;
+  dirty.heating = prev.heating_active != next.heating_active;
+  dirty.source = prev.source_severity != next.source_severity ||
+                 !ui_text_equal(prev.source_text, next.source_text);
+  dirty.mode_buttons = prev.mode != next.mode;
+  dirty.settings_values =
+      prev.repeat_on_minutes != next.repeat_on_minutes ||
+      prev.freeze_protect_centi != next.freeze_protect_centi;
+  dirty.time = !ui_text_equal(prev.time_text, next.time_text);
+  return dirty;
+}
 
 // Widget events are forwarded to the firmware with plain function pointers so
 // the UI stays independent from std::function and from the control layer.
