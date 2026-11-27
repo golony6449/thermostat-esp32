@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -196,6 +197,11 @@ def read_demo_modules(sketch_dir: Path, repo_root: Path) -> list[Path]:
     return modules
 
 
+def build_artifact_path(sketch_dir: Path, build_dir: Path) -> Path:
+    """Return the compiled sketch binary that an upload-only run uploads."""
+    return Path(build_dir) / f"{Path(sketch_dir).name}.ino.bin"
+
+
 def build_commands(
     cli,
     sketch,
@@ -206,33 +212,40 @@ def build_commands(
     include_dir,
     upload,
     port,
+    compile: bool = True,
 ) -> list[list[str]]:
-    """Assemble arduino-cli compile and (optional) upload commands."""
+    """Assemble arduino-cli compile and (optional) upload commands.
+
+    ``compile=False`` skips the compile command entirely, for ``--upload-only``
+    runs that reuse the existing build directory.
+    """
     prefix = [str(cli)]
     if config is not None:
         prefix.extend(["--config-file", str(config)])
 
-    compile_command = prefix + [
-        "compile",
-        "--fqbn",
-        str(fqbn),
-        "--build-path",
-        str(build_dir),
-    ]
-    for library in libraries:
-        compile_command.extend(["--library", str(library)])
-    include_flag = f"-I{Path(include_dir).as_posix()}"
-    compile_command.extend(
-        [
-            "--build-property",
-            f"compiler.cpp.extra_flags={include_flag}",
-            "--build-property",
-            f"compiler.c.extra_flags={include_flag}",
-            str(sketch),
-        ]
-    )
+    commands = []
 
-    commands = [compile_command]
+    if compile:
+        compile_command = prefix + [
+            "compile",
+            "--fqbn",
+            str(fqbn),
+            "--build-path",
+            str(build_dir),
+        ]
+        for library in libraries:
+            compile_command.extend(["--library", str(library)])
+        include_flag = f"-I{Path(include_dir).as_posix()}"
+        compile_command.extend(
+            [
+                "--build-property",
+                f"compiler.cpp.extra_flags={include_flag}",
+                "--build-property",
+                f"compiler.c.extra_flags={include_flag}",
+                str(sketch),
+            ]
+        )
+        commands.append(compile_command)
 
     if upload:
         upload_command = prefix + ["upload"]
@@ -311,6 +324,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="스케치 폴더 또는 .ino 경로 (예: demos/00_smoke, 저장소 루트 기준)",
     )
     parser.add_argument("--upload", action="store_true", help="컴파일 후 업로드")
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="컴파일 없이 기존 빌드 결과만 업로드 (--upload보다 우선)",
+    )
     parser.add_argument("--monitor", action="store_true", help="시리얼 모니터 실행")
     parser.add_argument("--port", help="시리얼 포트 (예: COM9, /dev/ttyUSB0)")
     parser.add_argument(
@@ -349,6 +367,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    if args.upload_only and not args.sketch:
+        print(
+            "--upload-only에는 스케치 경로가 필요합니다. "
+            "(예: python tools/build.py firmware/thermostat_main --upload-only)",
+            file=sys.stderr,
+        )
+        return 2
+
     port = args.port or os.environ.get("THERMOSTAT_PORT") or default_port()
     config = ensure_config(default_config_path())
 
@@ -367,7 +393,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
         build_dir = REPO_ROOT / ".build" / sketch_dir.name
+        if args.upload_only:
+            artifact = build_artifact_path(sketch_dir, build_dir)
+            if not artifact.is_file():
+                print(
+                    f"업로드할 빌드 결과가 없습니다: {artifact}\n"
+                    f"먼저 컴파일하세요: python tools/build.py {args.sketch}",
+                    file=sys.stderr,
+                )
+                return 2
         libraries = read_demo_modules(sketch_dir, REPO_ROOT)
+        compile_sketch = not args.upload_only
+        do_upload = args.upload or args.upload_only
         commands = build_commands(
             cli,
             sketch_dir,
@@ -376,19 +413,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             config,
             libraries,
             REPO_ROOT / "src",
-            args.upload,
+            do_upload,
             port,
+            compile=compile_sketch,
         )
+
+        labels = []
+        if compile_sketch:
+            labels.append("compile")
+        if do_upload:
+            labels.append("upload")
 
         if args.dry_run:
             for command in commands:
                 print(shlex.join([str(part) for part in command]))
         else:
-            for index, command in enumerate(commands):
+            for label, command in zip(labels, commands):
+                started_sec = time.monotonic()
                 code, output = run_logged(command)
+                elapsed_sec = time.monotonic() - started_sec
+                print(f"[build] {label} {elapsed_sec:.1f}초", flush=True)
                 if code != 0:
-                    is_upload = args.upload and index == 1
-                    if is_upload:
+                    if label == "upload":
                         hint = port_busy_hint(output)
                         if hint:
                             print(hint, file=sys.stderr)
