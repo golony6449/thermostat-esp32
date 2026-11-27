@@ -57,7 +57,16 @@ ZoneController::ZoneController(const ZoneConfig& config)
     : config_(clamped_config(config)) {}
 
 void ZoneController::set_config(const ZoneConfig& config) {
-  config_ = clamped_config(config);
+  const ZoneConfig next = clamped_config(config);
+  // A user change of the control settings is applied on the next step without
+  // waiting for the minimum on/off time; re-applying identical values (NVS
+  // load, Matter echo) is not a change.
+  if (initialized_ && (next.mode != config_.mode ||
+                       next.target_temp_centi != config_.target_temp_centi ||
+                       next.repeat_on_minutes != config_.repeat_on_minutes)) {
+    settings_changed_ = true;
+  }
+  config_ = next;
 }
 
 void ZoneController::set_strategy(const ITempStrategy* strategy) {
@@ -90,7 +99,10 @@ ZoneOutput ZoneController::step(const ZoneInput& input) {
 
   bool desired_heating = false;
   HeatReason desired_reason = HeatReason::kNone;
-  bool bypass_min_hold = false;  // safety transitions skip min on/off waits
+  // Safety transitions and the first step after a settings change skip the
+  // minimum on/off waits. The settings-change bypass is consumed here.
+  bool bypass_min_hold = settings_changed_;
+  settings_changed_ = false;
   bool freeze_active = false;
 
   if (sensor_fault) {

@@ -441,4 +441,109 @@ TEST_CASE(config_values_are_clamped_to_safe_ranges) {
   EXPECT_EQ(500, controller.config().freeze_protect_centi);
 }
 
+// SCRUM-335: a user change of target, mode or repeat minutes applies on the
+// next step without waiting for the minimum on/off time.
+TEST_CASE(raising_target_skips_minimum_off_time) {
+  ZoneConfig config = TempModeConfig();
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  config.target_temp_centi = 2000;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2100));
+  EXPECT_FALSE(out.logical_heating);
+
+  config.target_temp_centi = 2500;
+  controller.set_config(config);
+  out = controller.step(InputAt(10 * kSec, 2100));
+  EXPECT_TRUE(out.logical_heating);
+  EXPECT_TRUE(ReasonIs(HeatReason::kTemperatureBelowTarget, out));
+}
+
+TEST_CASE(lowering_target_skips_minimum_on_time) {
+  ZoneConfig config = TempModeConfig();
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  config.target_temp_centi = 2500;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2100));
+  EXPECT_TRUE(out.logical_heating);
+
+  config.target_temp_centi = 2000;
+  controller.set_config(config);
+  out = controller.step(InputAt(10 * kSec, 2100));
+  EXPECT_FALSE(out.logical_heating);
+}
+
+TEST_CASE(setting_change_bypass_applies_to_one_step_only) {
+  ZoneConfig config = TempModeConfig();
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  config.target_temp_centi = 2000;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2100));
+  EXPECT_FALSE(out.logical_heating);
+
+  // Target change while no transition is wanted consumes the bypass.
+  config.target_temp_centi = 2100;
+  controller.set_config(config);
+  out = controller.step(InputAt(10 * kSec, 2100));
+  EXPECT_FALSE(out.logical_heating);
+
+  // Later cooling inside the off hold keeps the normal 5 minute rule.
+  out = controller.step(InputAt(60 * kSec, 1900));
+  EXPECT_FALSE(out.logical_heating);
+  EXPECT_TRUE(ReasonIs(HeatReason::kMinOffHold, out));
+}
+
+TEST_CASE(unchanged_config_keeps_minimum_off_time) {
+  ZoneConfig config = TempModeConfig();
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2200));
+  EXPECT_FALSE(out.logical_heating);
+
+  // Re-applying identical settings (e.g. NVS load, Matter echo) is no change.
+  controller.set_config(config);
+  out = controller.step(InputAt(60 * kSec, 2000));
+  EXPECT_FALSE(out.logical_heating);
+  EXPECT_TRUE(ReasonIs(HeatReason::kMinOffHold, out));
+}
+
+TEST_CASE(mode_change_to_temperature_skips_minimum_off_time) {
+  ZoneConfig config = TempModeConfig();
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  config.mode = Mode::kOff;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2000));
+  EXPECT_FALSE(out.logical_heating);
+
+  config.mode = Mode::kTemperature;
+  controller.set_config(config);
+  out = controller.step(InputAt(10 * kSec, 2000));
+  EXPECT_TRUE(out.logical_heating);
+}
+
+TEST_CASE(repeat_minutes_change_skips_minimum_on_time) {
+  ZoneConfig config = RepeatConfig(30);
+  config.min_on_sec = 300;
+  config.min_off_sec = 300;
+  ZoneController controller(config);
+
+  ZoneOutput out = controller.step(InputAt(0, 2000));
+  EXPECT_TRUE(out.logical_heating);
+
+  // 2 minutes into the cycle, N drops to 1 minute: stop now.
+  config.repeat_on_minutes = 1;
+  controller.set_config(config);
+  out = controller.step(InputAt(2 * kMin, 2000));
+  EXPECT_FALSE(out.logical_heating);
+}
+
 THERMOSTAT_TEST_MAIN()
