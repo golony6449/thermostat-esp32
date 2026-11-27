@@ -61,23 +61,19 @@
    `firmware/thermostat_main/esp_panel_board_supported_conf.h`는 그대로 둔다(화면 드라이버 라이브러리가 스케치 폴더에서 찾는다). 빌드 뒤 화면 설정이 그대로인지 보려면 빌드 로그에 경고가 늘지 않았는지 확인한다.
 5. `modules.txt` 맨 끝에 `src/firmware`를 추가한다.
 
-### 작업 2: build.py — 새 워크트리 빌드 폴더 미리 채우기, 업로드만 하기, 시간 출력
+### 작업 2: build.py — 업로드만 하기, 시간 출력
 
 **Files:**
 - Modify: `tools/build.py`
 - Create: `tools/test_build.py`
 
-1. 빌드 폴더 미리 채우기: `build_dir`(= `REPO_ROOT/.build/<스케치 이름>`)가 없을 때, 이 저장소가 git 워크트리이고 주 체크아웃에 같은 이름의 빌드 폴더가 있으면 그 폴더를 `shutil.copytree`로 복사하고 `[build] 빌드 폴더를 <원본>에서 복사했습니다(<초>초)`를 출력한다.
-   - 주 체크아웃 경로는 `git -C <REPO_ROOT> worktree list --porcelain`의 **첫 번째** `worktree <경로>` 줄이다. 그 경로가 `REPO_ROOT`와 같으면(주 체크아웃 자신) 복사하지 않는다. git 명령이 실패하면 조용히 건너뛴다.
-   - 순수 함수로 나눈다: `main_worktree_from_porcelain(text: str) -> Path | None`, `seed_source(build_dir: Path, repo_root: Path, main_root: Path | None) -> Path | None`(복사할 원본 또는 None: `build_dir`가 이미 있거나, `main_root`가 None이거나 `repo_root`와 같거나, 원본이 없으면 None).
-   - 실측(2026-11-28): 259MB 복사 16초.
+1. (하지 않음) 빌드 폴더 미리 채우기: 2026-11-28 실측에서 주 체크아웃의 빌드 폴더를 새 워크트리에 복사해도 30분 넘게 전부 다시 빌드했다. `build.options.json`에 워크트리 경로(`--library`, `-I...src`)가 들어 있어 경로가 다르면 arduino-cli가 옵션이 바뀐 것으로 보고 처음부터 빌드한다. 이 작업에서는 다루지 않는다.
 2. `--upload-only`: 컴파일 없이 업로드 명령만 실행한다(`--input-dir`는 기존과 같은 빌드 폴더). 빌드 폴더에 `<스케치 이름>.ino.bin`이 없으면 한국어 오류와 함께 2를 돌려준다. `--upload`와 함께 쓰면 `--upload-only`가 우선한다.
 3. 각 명령이 끝나면 `[build] <compile|upload> <초>초`를 출력한다(`time.monotonic()`).
-4. `tools/test_build.py`(표준 `unittest`, 외부 의존성 없음): `main_worktree_from_porcelain`(정상, 빈 문자열, `worktree` 줄 없음, Windows 경로), `seed_source`의 각 분기(임시 폴더로), `build_commands`가 `--upload-only`일 때 업로드 명령 하나만 만드는지(필요하면 `build_commands`에 `compile: bool = True` 인자 추가). `python tools/test_build.py`로 돈다.
+4. `tools/test_build.py`(표준 `unittest`, 외부 의존성 없음): `build_commands`가 `--upload-only`일 때 업로드 명령 하나만 만드는지(필요하면 `build_commands`에 `compile: bool = True` 인자 추가). `python tools/test_build.py`로 돈다.
 
 ## Review Focus
 
 1. 작업 1에서 옮긴 코드가 원래와 같은가: 함수 본문·상수·로그 문구·전역 객체(특히 `g_board`, `g_ui`, `g_matter`)의 정의 순서가 바뀌지 않았는가. 빠진 함수나 `#if CONFIG_ENABLE_CHIPOBLE` 같은 조건 분기가 없는가.
 2. 스케치(`thermostat_main.ino`)와 `thermostat_firmware.h`가 무거운 헤더를 include하지 않는가.
-3. `seed_source`가 주 체크아웃 자신에서는 복사하지 않고, 이미 있는 빌드 폴더를 덮어쓰지 않는가.
-4. `--upload-only`가 컴파일을 건너뛰고, 빌드 결과가 없으면 업로드하지 않는가.
+3. `--upload-only`가 컴파일을 건너뛰고, 빌드 결과가 없으면 업로드하지 않는가.
