@@ -50,6 +50,7 @@
 ## 5. 소프트웨어 스택
 
 - Arduino ESP32 코어 3.x + 내장 Matter 라이브러리(Matter over Wi-Fi)
+  - **3.3.13 이상 필수.** 3.3.12(ESP-IDF 7월 빌드)는 RGB LCD 바운스 버퍼 버그(ESP-IDF #19070)로 화면 출력이 한 번 어긋나면 다음 인터럽트 누락 때까지 계속 흔들린다(SCRUM-256). 버전은 `tools/build.py`의 `ESP32_CORE_PACKAGE`에 고정
 - 빌드: Arduino CLI 또는 PlatformIO(pioarduino) 중 터미널에서 빌드, 업로드, 시리얼 모니터가 가능한 쪽
 - UI: LVGL
 - 파티션: 16MB 플래시를 활용하고 OTA 가능한 구성으로

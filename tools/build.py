@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_FQBN = "esp32:esp32:esp32s3:CDCOnBoot=cdc,USBMode=hwcdc,FlashSize=16M,PSRAM=opi"
 DEFAULT_PARTITION = "app3M_fat9M_16MB"
 DEFAULT_BAUD = 115200
-ESP32_CORE_PACKAGE = "esp32:esp32@3.3.12"
+ESP32_CORE_PACKAGE = "esp32:esp32@3.3.13"
 ESP32_BOARD_MANAGER_URL = (
     "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
 )
