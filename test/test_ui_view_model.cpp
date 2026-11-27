@@ -8,15 +8,31 @@
 #include "ui/waveshare43b/ui_view_model.h"
 
 using thermostat::ui::can_adjust_primary;
+using thermostat::ui::diff_view_model;
 using thermostat::ui::format_primary_value;
 using thermostat::ui::format_temp_celsius;
 using thermostat::ui::primary_caption_for_mode;
+using thermostat::ui::UiDirty;
+using thermostat::ui::ui_dirty_all;
 using thermostat::ui::UiMode;
 using thermostat::ui::UiViewModel;
 using thermostat::ui::SourceSeverity;
 using thermostat::ui::step_freeze_protect;
 using thermostat::ui::step_repeat_minutes;
 using thermostat::ui::step_target_temp;
+
+namespace {
+
+int dirty_count(const UiDirty& dirty) {
+  return static_cast<int>(dirty.current_temp) +
+         static_cast<int>(dirty.primary) + static_cast<int>(dirty.heating) +
+         static_cast<int>(dirty.source) +
+         static_cast<int>(dirty.mode_buttons) +
+         static_cast<int>(dirty.settings_values) +
+         static_cast<int>(dirty.time);
+}
+
+}  // namespace
 
 TEST_CASE(step_target_temp_moves_in_half_degree_steps) {
   EXPECT_EQ(2300, step_target_temp(2250, 50));
@@ -174,6 +190,131 @@ TEST_CASE(can_adjust_primary_only_blocks_off_mode) {
   EXPECT_FALSE(can_adjust_primary(UiMode::kOff));
   EXPECT_TRUE(can_adjust_primary(UiMode::kTemperature));
   EXPECT_TRUE(can_adjust_primary(UiMode::kRepeat));
+}
+
+TEST_CASE(ui_dirty_all_marks_every_part) {
+  const UiDirty dirty = ui_dirty_all();
+  EXPECT_TRUE(dirty.current_temp);
+  EXPECT_TRUE(dirty.primary);
+  EXPECT_TRUE(dirty.heating);
+  EXPECT_TRUE(dirty.source);
+  EXPECT_TRUE(dirty.mode_buttons);
+  EXPECT_TRUE(dirty.settings_values);
+  EXPECT_TRUE(dirty.time);
+  EXPECT_TRUE(dirty.any());
+}
+
+TEST_CASE(diff_view_model_identical_models_are_clean) {
+  UiViewModel prev;
+  UiViewModel next;
+  const UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_FALSE(dirty.any());
+  EXPECT_EQ(0, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_tracks_current_temperature) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+
+  next.current_temp_centi = 2150;
+  UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.current_temp);
+  EXPECT_EQ(1, dirty_count(dirty));
+
+  next = prev;
+  next.temp_valid = false;
+  dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.current_temp);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_tracks_primary_value) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+
+  next.target_temp_centi = 2300;
+  UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.primary);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_mode_marks_primary_and_mode_buttons) {
+  for (UiMode mode : {UiMode::kOff, UiMode::kRepeat}) {
+    UiViewModel prev;
+    UiViewModel next = prev;
+    next.mode = mode;
+    const UiDirty dirty = diff_view_model(prev, next);
+    EXPECT_TRUE(dirty.primary);
+    EXPECT_TRUE(dirty.mode_buttons);
+    EXPECT_EQ(2, dirty_count(dirty));
+  }
+}
+
+TEST_CASE(diff_view_model_repeat_minutes_marks_primary_and_settings) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+  next.repeat_on_minutes = 20;
+  const UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.primary);
+  EXPECT_TRUE(dirty.settings_values);
+  EXPECT_EQ(2, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_tracks_heating_badge) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+  next.heating_active = true;
+  const UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.heating);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_compares_source_text_by_content) {
+  UiViewModel prev;
+  UiViewModel next;
+  // Distinct char arrays with identical contents must not count as a change
+  // (a pointer comparison here would always report one).
+  std::strcpy(next.source_text, prev.source_text);
+  UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_FALSE(dirty.source);
+  EXPECT_EQ(0, dirty_count(dirty));
+
+  std::strcpy(next.source_text, "보드 센서 · 원격 센서 응답 없음");
+  dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.source);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_tracks_source_severity) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+  next.source_severity = SourceSeverity::kWarning;
+  const UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.source);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_tracks_freeze_protect) {
+  UiViewModel prev;
+  UiViewModel next = prev;
+  next.freeze_protect_centi = 1100;
+  const UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.settings_values);
+  EXPECT_EQ(1, dirty_count(dirty));
+}
+
+TEST_CASE(diff_view_model_compares_time_text_by_content) {
+  UiViewModel prev;
+  UiViewModel next;
+  std::strcpy(next.time_text, prev.time_text);
+  UiDirty dirty = diff_view_model(prev, next);
+  EXPECT_FALSE(dirty.time);
+  EXPECT_EQ(0, dirty_count(dirty));
+
+  std::strcpy(next.time_text, "21:16");
+  dirty = diff_view_model(prev, next);
+  EXPECT_TRUE(dirty.time);
+  EXPECT_EQ(1, dirty_count(dirty));
 }
 
 THERMOSTAT_TEST_MAIN()

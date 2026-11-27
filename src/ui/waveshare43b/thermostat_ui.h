@@ -20,7 +20,8 @@ class ThermostatUi {
   // twice without a successful first call.  Call with the LVGL lock held.
   bool begin(const UiCallbacks& callbacks);
 
-  // Copies the view model and refreshes every label, badge, and button color.
+  // Copies the view model and redraws only the widgets whose value changed.
+  // The first call after begin() applies every part of the model.
   void update(const UiViewModel& vm);
 
   void show_settings(bool visible);
@@ -59,15 +60,28 @@ class ThermostatUi {
   void build_bottom_control_panel(lv_obj_t* parent);
   void build_settings_overlay(lv_obj_t* parent);
   void refresh_all();
+  void apply_dirty(const UiDirty& dirty);
+  void refresh_current_temp();
   void refresh_primary_control();
-  void refresh_mode_buttons();
+  void refresh_heating_badge();
   void refresh_source_badge();
+  void refresh_mode_buttons();
   void refresh_settings_values();
+  void refresh_time();
 
   UiCallbacks callbacks_{};
   UiViewModel vm_{};
   bool started_ = false;
   bool settings_visible_ = false;
+
+  // Last style state applied to the widgets. -1 means "not applied yet" so the
+  // first refresh colors every widget; equal states are skipped because LVGL
+  // would otherwise invalidate the whole object tree for nothing.
+  bool has_update_ = false;
+  int8_t last_primary_adjustable_ = -1;
+  int8_t last_mode_ = -1;
+  int8_t last_heating_ = -1;
+  int8_t last_source_severity_ = -1;
 
   lv_obj_t* current_temp_label_ = nullptr;
   lv_obj_t* heating_badge_ = nullptr;
