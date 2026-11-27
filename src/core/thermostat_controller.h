@@ -75,6 +75,9 @@ class ZoneController {
   bool initialized_ = false;
   bool logical_heating_ = false;
   bool freeze_protect_active_ = false;
+  // Set by set_config when mode, target or repeat minutes changed; the next
+  // step ignores the minimum on/off time once.
+  bool settings_changed_ = false;
   uint64_t last_transition_ms_ = 0;
   uint64_t repeat_cycle_anchor_ms_ = 0;
 
