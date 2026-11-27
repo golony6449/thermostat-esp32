@@ -144,6 +144,22 @@ class JsonReader {
     return true;
   }
 
+  // Parses a JSON true/false literal. Returns false (position unspecified) for
+  // any other value; callers that tolerate non-bool values rewind to a saved
+  // mark and skip_value instead (same pattern as parse_temperature).
+  bool parse_bool(bool* out) {
+    skip_whitespace();
+    if (parse_literal("true")) {
+      *out = true;
+      return true;
+    }
+    if (parse_literal("false")) {
+      *out = false;
+      return true;
+    }
+    return false;
+  }
+
   bool parse_string(std::string* out) {
     if (!consume('"')) {
       return false;
@@ -469,6 +485,8 @@ bool parse_sensor_object(JsonReader& reader,
   bool has_name = false;
   bool has_temperature = false;
   bool has_updated_at = false;
+  bool has_online = false;
+  bool has_checked_at = false;
   RemoteSensorReading reading;
   reader.skip_whitespace();
   if (!reader.consume('}')) {
@@ -515,6 +533,39 @@ bool parse_sensor_object(JsonReader& reader,
           reading.updated_epoch_sec = epoch_sec;
           has_updated_at = true;
         }
+      } else if (key == "online") {
+        // Optional field: only a true/false literal counts. null, strings and
+        // numbers are skipped and leave the reading with no health information,
+        // but never discard the entry.
+        const size_t mark = reader.position();
+        bool online = false;
+        if (reader.parse_bool(&online)) {
+          reading.online = online;
+          has_online = true;
+        } else {
+          reader.set_position(mark);
+          if (!reader.skip_value()) {
+            return false;
+          }
+        }
+      } else if (key == "checked_at") {
+        // Optional field: only a string with a timezone offset counts. A
+        // non-string value is skipped; an unparsable timestamp leaves the
+        // reading with no health information. Either way the entry survives.
+        const size_t mark = reader.position();
+        std::string checked_at;
+        if (!reader.parse_string(&checked_at)) {
+          reader.set_position(mark);
+          if (!reader.skip_value()) {
+            return false;
+          }
+        } else {
+          int64_t epoch_sec = 0;
+          if (parse_iso8601_to_epoch(checked_at.c_str(), &epoch_sec)) {
+            reading.checked_epoch_sec = epoch_sec;
+            has_checked_at = true;
+          }
+        }
       } else {
         if (!reader.skip_value()) {
           return false;
@@ -530,6 +581,9 @@ bool parse_sensor_object(JsonReader& reader,
       return false;
     }
   }
+  // Both health fields must be usable; a half-filled pair is treated as "no
+  // online information" and the selector keeps its previous behaviour.
+  reading.online_known = has_online && has_checked_at;
   const bool complete = has_id && has_name && !reading.id.empty() &&
                         !reading.name.empty() && has_temperature &&
                         has_updated_at;
@@ -952,6 +1006,7 @@ ResolvedTemperature SensorSelector::resolve_remote(int64_t now_epoch_sec) const 
   struct Candidate {
     const RemoteSensorReading* reading;
     int64_t age_sec;
+    bool online_confirmed;
   };
   std::vector<Candidate> candidates;
   bool found_any_reading = false;
@@ -971,12 +1026,25 @@ ResolvedTemperature SensorSelector::resolve_remote(int64_t now_epoch_sec) const 
     if (age_sec < 0) {
       age_sec = 0;
     }
+    bool online_confirmed = false;
     if (age_sec > kStaleAgeSec) {
-      // Stale values are excluded; if every selected sensor is stale the
-      // board sensor takes over below.
-      continue;
+      // A stale report is still usable when the home server checked the device
+      // health recently; the report-age cap guards a value that is stuck while
+      // the device stays online.
+      if (!match->online_known || !match->online) {
+        continue;
+      }
+      int64_t checked_age_sec = now_epoch_sec - match->checked_epoch_sec;
+      if (checked_age_sec < 0) {
+        checked_age_sec = 0;
+      }
+      if (checked_age_sec > kStaleAgeSec ||
+          age_sec > kOnlineMaxReportAgeSec) {
+        continue;
+      }
+      online_confirmed = true;
     }
-    candidates.push_back(Candidate{match, age_sec});
+    candidates.push_back(Candidate{match, age_sec, online_confirmed});
     if (config_.mode == SourceMode::kSingleRemote) {
       break;
     }
@@ -990,9 +1058,15 @@ ResolvedTemperature SensorSelector::resolve_remote(int64_t now_epoch_sec) const 
 
   int64_t max_age_sec = 0;
   int32_t sum_centi = 0;
+  bool any_warning_age = false;
   for (const Candidate& candidate : candidates) {
     if (candidate.age_sec > max_age_sec) {
       max_age_sec = candidate.age_sec;
+    }
+    // A reading approved by the online check is expected to be old (the sensor
+    // only reports on change) and does not get the warning colour.
+    if (!candidate.online_confirmed && candidate.age_sec > kWarnAgeSec) {
+      any_warning_age = true;
     }
     sum_centi += candidate.reading->temp_centi;
   }
@@ -1005,7 +1079,7 @@ ResolvedTemperature SensorSelector::resolve_remote(int64_t now_epoch_sec) const 
   out.valid = true;
   out.temp_centi = average_centi;
   out.used_fallback_board = false;
-  out.freshness = max_age_sec > kWarnAgeSec ? Freshness::kWarn : Freshness::kFresh;
+  out.freshness = any_warning_age ? Freshness::kWarn : Freshness::kFresh;
   out.age_sec = max_age_sec;
   if (config_.mode == SourceMode::kSingleRemote) {
     out.source_label = ensure_sensor_suffix(candidates.front().reading->name) +

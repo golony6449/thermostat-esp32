@@ -18,6 +18,7 @@ using thermostat::sensor::SensorSelector;
 using thermostat::sensor::SourceMode;
 using thermostat::sensor::TempFilter;
 using thermostat::sensor::kInvalidTempCenti;
+using thermostat::sensor::kOnlineMaxReportAgeSec;
 
 // Fixed reference time so every test is independent of the host clock.
 constexpr int64_t kNow = 1795524000;
@@ -30,6 +31,19 @@ RemoteSensorReading make_reading(const std::string& id,
   reading.name = name;
   reading.temp_centi = temp_centi;
   reading.updated_epoch_sec = updated_epoch_sec;
+  return reading;
+}
+
+RemoteSensorReading make_online_reading(const std::string& id,
+                                        const std::string& name,
+                                        int16_t temp_centi,
+                                        int64_t updated_epoch_sec, bool online,
+                                        int64_t checked_epoch_sec) {
+  RemoteSensorReading reading =
+      make_reading(id, name, temp_centi, updated_epoch_sec);
+  reading.online_known = true;
+  reading.online = online;
+  reading.checked_epoch_sec = checked_epoch_sec;
   return reading;
 }
 
@@ -331,6 +345,45 @@ TEST_CASE(parse_homeserver_sensors_real_sample) {
   EXPECT_EQ(1795700497, readings[0].updated_epoch_sec);
 }
 
+TEST_CASE(parse_homeserver_sensors_online_fields) {
+  // The SCRUM-313 sample with the SCRUM-316 online/checked_at fields.
+  const std::string json =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00","online":true,"checked_at":"2026-11-26T23:15:37+09:00"}]})json";
+  std::vector<RemoteSensorReading> readings;
+  EXPECT_TRUE(
+      thermostat::sensor::parse_homeserver_sensors_json(json, &readings));
+  EXPECT_EQ(static_cast<size_t>(1), readings.size());
+  EXPECT_EQ(2100, readings[0].temp_centi);
+  EXPECT_EQ(1795700497, readings[0].updated_epoch_sec);
+  EXPECT_TRUE(readings[0].online_known);
+  EXPECT_TRUE(readings[0].online);
+  EXPECT_EQ(1795702537, readings[0].checked_epoch_sec);
+}
+
+TEST_CASE(parse_homeserver_sensors_ignores_bad_online_fields) {
+  // Every malformed or half-filled health pair keeps the entry and leaves
+  // online_known false so the selector behaves exactly as before.
+  const std::string prefix =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00",)json";
+  const std::string suffix = "}]}";
+  const char* const variants[] = {
+      R"json("online":null,"checked_at":"2026-11-26T23:15:37+09:00")json",
+      R"json("online":"true","checked_at":"2026-11-26T23:15:37+09:00")json",
+      R"json("online":1,"checked_at":"2026-11-26T23:15:37+09:00")json",
+      R"json("online":true,"checked_at":1795702537)json",
+      R"json("online":true,"checked_at":"2026-11-26T23:15:37")json",
+      R"json("online":true)json",
+      R"json("checked_at":"2026-11-26T23:15:37+09:00")json",
+  };
+  for (const char* variant : variants) {
+    std::vector<RemoteSensorReading> readings;
+    EXPECT_TRUE(thermostat::sensor::parse_homeserver_sensors_json(
+        prefix + variant + suffix, &readings));
+    EXPECT_EQ(static_cast<size_t>(1), readings.size());
+    EXPECT_FALSE(readings[0].online_known);
+  }
+}
+
 // --- Home-server time -----------------------------------------------------
 
 TEST_CASE(parse_homeserver_time_real_sample) {
@@ -598,6 +651,202 @@ TEST_CASE(selector_failures_keep_previous_value_until_third) {
   resolved = selector.resolve(kNow);
   EXPECT_EQ(2140, resolved.temp_centi);
   EXPECT_FALSE(resolved.used_fallback_board);
+}
+
+TEST_CASE(selector_stale_reading_confirmed_online) {
+  // SCRUM-313 real sample plus the SCRUM-316 health fields; "now" is 30 s
+  // after checked_at, so the 34-minute-old report is still trusted.
+  const std::string json =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00","online":true,"checked_at":"2026-11-26T23:15:37+09:00"}]})json";
+  std::vector<RemoteSensorReading> readings;
+  EXPECT_TRUE(
+      thermostat::sensor::parse_homeserver_sensors_json(json, &readings));
+  EXPECT_EQ(static_cast<size_t>(1), readings.size());
+
+  constexpr int64_t kSampleNow = 1795702567;
+  SensorSelector selector;
+  selector.set_config(
+      make_remote_config(SourceMode::kSingleRemote, {"livingroom"}));
+  selector.record_remote_success(readings, kSampleNow);
+
+  ResolvedTemperature resolved = selector.resolve(kSampleNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2100, resolved.temp_centi);
+  EXPECT_FALSE(resolved.used_fallback_board);
+  EXPECT_TRUE(resolved.freshness == Freshness::kFresh);
+  EXPECT_EQ(2070, resolved.age_sec);
+  EXPECT_STREQ("거실 센서 · 34분 전", resolved.source_label.c_str());
+}
+
+TEST_CASE(selector_stale_reading_offline_or_unknown_falls_back) {
+  constexpr int64_t kSampleNow = 1795702567;
+  SensorSelector selector;
+  selector.set_config(
+      make_remote_config(SourceMode::kSingleRemote, {"livingroom"}));
+
+  // Same sample with "online": false: the stale value is not trusted and
+  // without a board sensor there is no usable reading.
+  const std::string offline_json =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00","online":false,"checked_at":"2026-11-26T23:15:37+09:00"}]})json";
+  std::vector<RemoteSensorReading> readings;
+  EXPECT_TRUE(thermostat::sensor::parse_homeserver_sensors_json(offline_json,
+                                                               &readings));
+  selector.record_remote_success(readings, kSampleNow);
+  ResolvedTemperature resolved = selector.resolve(kSampleNow);
+  EXPECT_FALSE(resolved.valid);
+  EXPECT_EQ(kInvalidTempCenti, resolved.temp_centi);
+  EXPECT_STREQ("센서 오류 · 온도 확인 불가", resolved.source_label.c_str());
+
+  // The original SCRUM-313 response without the optional fields behaves
+  // exactly as before.
+  const std::string fields_absent_json =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00"}]})json";
+  EXPECT_TRUE(thermostat::sensor::parse_homeserver_sensors_json(
+      fields_absent_json, &readings));
+  EXPECT_FALSE(readings[0].online_known);
+  selector.record_remote_success(readings, kSampleNow);
+  resolved = selector.resolve(kSampleNow);
+  EXPECT_FALSE(resolved.valid);
+  EXPECT_STREQ("센서 오류 · 온도 확인 불가", resolved.source_label.c_str());
+
+  // Half-filled pair: "online" alone never enables the online exemption.
+  RemoteSensorReading half = make_reading("livingroom", "거실", 2100,
+                                          kSampleNow - 2070);
+  half.online = true;  // online_known stays false (no checked_at).
+  selector.record_remote_success({half}, kSampleNow);
+  resolved = selector.resolve(kSampleNow);
+  EXPECT_FALSE(resolved.valid);
+  EXPECT_STREQ("센서 오류 · 온도 확인 불가", resolved.source_label.c_str());
+}
+
+TEST_CASE(selector_online_check_boundaries) {
+  SensorSelector selector;
+  selector.set_config(
+      make_remote_config(SourceMode::kSingleRemote, {"livingroom"}));
+  selector.update_board_temp(2000, kNow);
+
+  // checked_age == kStaleAgeSec (600) is still accepted.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140, kNow - 700, true,
+                           kNow - 600)},
+      kNow);
+  ResolvedTemperature resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2140, resolved.temp_centi);
+  EXPECT_FALSE(resolved.used_fallback_board);
+  EXPECT_TRUE(resolved.freshness == Freshness::kFresh);
+  EXPECT_EQ(700, resolved.age_sec);
+
+  // One second older means the home server's health view is stale: fall back.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140, kNow - 700, true,
+                           kNow - 601)},
+      kNow);
+  resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2000, resolved.temp_centi);
+  EXPECT_TRUE(resolved.used_fallback_board);
+  EXPECT_STREQ("보드 센서 · 원격 센서 값 오래됨",
+               resolved.source_label.c_str());
+
+  // age_sec == kOnlineMaxReportAgeSec (3 h) is still accepted...
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140,
+                           kNow - kOnlineMaxReportAgeSec, true, kNow)},
+      kNow);
+  resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2140, resolved.temp_centi);
+  EXPECT_FALSE(resolved.used_fallback_board);
+  EXPECT_TRUE(resolved.freshness == Freshness::kFresh);
+  EXPECT_EQ(kOnlineMaxReportAgeSec, resolved.age_sec);
+
+  // ...one second more exceeds the report-age cap.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140,
+                           kNow - kOnlineMaxReportAgeSec - 1, true, kNow)},
+      kNow);
+  resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2000, resolved.temp_centi);
+  EXPECT_TRUE(resolved.used_fallback_board);
+  EXPECT_STREQ("보드 센서 · 원격 센서 값 오래됨",
+               resolved.source_label.c_str());
+}
+
+TEST_CASE(selector_online_fields_do_not_hide_fresh_warning) {
+  SensorSelector selector;
+  selector.set_config(
+      make_remote_config(SourceMode::kSingleRemote, {"livingroom"}));
+
+  // A 6-minute-old report is admitted by the normal (non-online) rule, so its
+  // age still raises the warning colour even though health data is present.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140, kNow - 360, true, kNow)},
+      kNow);
+  ResolvedTemperature resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_TRUE(resolved.freshness == Freshness::kWarn);
+  EXPECT_EQ(360, resolved.age_sec);
+  EXPECT_STREQ("거실 센서 · 6분 전", resolved.source_label.c_str());
+}
+
+TEST_CASE(selector_average_warning_skips_online_confirmed) {
+  SensorSelector selector;
+  selector.set_config(make_remote_config(SourceMode::kAverageRemote,
+                                         {"livingroom", "bedroom"}));
+
+  // 거실 is 34 min old but confirmed online; 안방 reported 6 min ago without
+  // health fields, so its age still raises the warning colour.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2100, kNow - 2040, true,
+                           kNow - 30),
+       make_reading("bedroom", "안방", 2200, kNow - 360)},
+      kNow);
+  ResolvedTemperature resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2150, resolved.temp_centi);
+  EXPECT_TRUE(resolved.freshness == Freshness::kWarn);
+  EXPECT_EQ(2040, resolved.age_sec);
+  EXPECT_STREQ("평균(거실, 안방) · 최근 34분 전",
+               resolved.source_label.c_str());
+
+  // With the second sensor 2 min old only the online-confirmed sensor's age
+  // remains, and that age is exempt from the warning colour.
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2100, kNow - 2040, true,
+                           kNow - 30),
+       make_reading("bedroom", "안방", 2200, kNow - 120)},
+      kNow);
+  resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_TRUE(resolved.freshness == Freshness::kFresh);
+  EXPECT_EQ(2040, resolved.age_sec);
+}
+
+TEST_CASE(selector_failures_override_online_confirmed) {
+  SensorSelector selector;
+  selector.set_config(
+      make_remote_config(SourceMode::kSingleRemote, {"livingroom"}));
+  selector.update_board_temp(2000, kNow);
+  selector.record_remote_success(
+      {make_online_reading("livingroom", "거실", 2140, kNow - 2040, true,
+                           kNow - 30)},
+      kNow);
+  EXPECT_EQ(2140, selector.resolve(kNow).temp_centi);
+
+  // Three consecutive fetch failures fall back to the board sensor even
+  // though the last stored reading was confirmed online.
+  selector.record_remote_failure();
+  selector.record_remote_failure();
+  selector.record_remote_failure();
+  ResolvedTemperature resolved = selector.resolve(kNow);
+  EXPECT_TRUE(resolved.valid);
+  EXPECT_EQ(2000, resolved.temp_centi);
+  EXPECT_TRUE(resolved.used_fallback_board);
+  EXPECT_TRUE(resolved.freshness == Freshness::kStaleOrFallback);
+  EXPECT_STREQ("보드 센서 · 원격 센서 응답 없음",
+               resolved.source_label.c_str());
 }
 
 TEST_CASE(selector_missing_remote_reading_falls_back_to_board) {
