@@ -36,6 +36,11 @@ constexpr int16_t kMaxStepDeltaCenti = 500;
 constexpr int64_t kWarnAgeSec = 300;   // > 5 min: warning colour
 constexpr int64_t kStaleAgeSec = 600;  // > 10 min: fall back to the board sensor
 
+// A remote value whose last report is older than kStaleAgeSec is still used
+// when the home server confirmed the device online within kStaleAgeSec and
+// the report is not older than this cap (guards a stuck temperature value).
+constexpr int64_t kOnlineMaxReportAgeSec = 3 * 3600;
+
 // Consecutive home-server failures that trigger the board sensor fallback.
 constexpr uint8_t kMaxConsecutiveFailures = 3;
 
@@ -80,13 +85,22 @@ struct RemoteSensorReading {
   std::string name;
   int16_t temp_centi = kInvalidTempCenti;
   int64_t updated_epoch_sec = 0;
+  // Optional home-server health fields. online_known is true only when both
+  // "online" (a JSON true/false) and "checked_at" (an ISO-8601 timestamp with
+  // offset) were parsed. Missing or malformed fields leave online_known false
+  // and never discard the entry.
+  bool online_known = false;
+  bool online = false;
+  int64_t checked_epoch_sec = 0;
 };
 
 // Parses the home-server response documented in CLAUDE.md section 10:
 //   { "sensors": [ { "id": ..., "name": ..., "temperature": ...,
-//                    "updated_at": "..." } ] }
+//                    "updated_at": "...", "online": true,
+//                    "checked_at": "..." } ] }
 // *out is cleared first. Structural JSON errors return false. Entries with a
-// missing/invalid required field are skipped. At most kMaxRemoteSensors
+// missing/invalid required field are skipped. The optional "online" and
+// "checked_at" fields never make an entry incomplete. At most kMaxRemoteSensors
 // entries are kept. A top-level object without a "sensors" array is invalid.
 bool parse_homeserver_sensors_json(const std::string& json,
                                    std::vector<RemoteSensorReading>* out);
@@ -135,9 +149,12 @@ struct ResolvedTemperature {
 
 // Chooses the temperature source, filters the board sensor and applies the
 // automatic fallback rules from CLAUDE.md section 10/11:
-//   * remote values older than kStaleAgeSec are excluded (all stale -> board),
+//   * remote values older than kStaleAgeSec are excluded unless the home
+//     server confirmed the device online within kStaleAgeSec and the report
+//     is not older than kOnlineMaxReportAgeSec (all excluded -> board),
 //   * kMaxConsecutiveFailures consecutive fetch failures -> board,
-//   * the freshest warning threshold is > kWarnAgeSec,
+//   * a reading approved by the online check does not trigger the warning
+//     colour; every other reading older than kWarnAgeSec does,
 //   * if the board sensor is also unavailable the result is invalid/kFault.
 class SensorSelector {
  public:
