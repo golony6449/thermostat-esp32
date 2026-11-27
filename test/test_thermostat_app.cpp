@@ -427,4 +427,56 @@ TEST_CASE(homeserver_url_update_marks_settings_dirty) {
             std::strlen(app.settings().homeserver_url));
 }
 
+TEST_CASE(sensor_source_update_switches_to_remote_and_marks_dirty) {
+  ThermostatApp app;
+  app.init(base_settings(), 0);
+  app.take_actions();
+
+  constexpr int64_t kNow = 1795700497 + 60;  // real sample updated_at + 1 min
+  app.on_board_temp_sample(1800, kNow);
+  const std::string json =
+      "{\"sensors\":[{\"id\":\"livingroom\",\"name\":\"거실\","
+      "\"temperature\":21.0,\"updated_at\":\"2026-11-26T22:41:37+09:00\"}]}";
+  EXPECT_TRUE(app.on_remote_sensors_json(json, kNow));
+
+  // Board-only default ignores the remote reading.
+  app.step(1000, kNow);
+  EXPECT_EQ(1800, app.last_temp().temp_centi);
+  app.take_actions();
+
+  const char* ids[] = {"livingroom"};
+  EXPECT_TRUE(app.set_sensor_source(SensorSourceSetting::kSingleRemote, ids, 1));
+  EXPECT_TRUE(app.take_actions().settings_dirty);
+  EXPECT_EQ(static_cast<int>(SensorSourceSetting::kSingleRemote),
+            static_cast<int>(app.settings().zones[0].sensor_source));
+  EXPECT_EQ(1, app.settings().zones[0].selected_remote_count);
+  EXPECT_STREQ("livingroom", app.settings().zones[0].selected_remote_ids[0]);
+
+  app.step(2000, kNow);
+  EXPECT_TRUE(app.last_temp().valid);
+  EXPECT_EQ(2100, app.last_temp().temp_centi);
+  EXPECT_STREQ("거실 센서 · 1분 전", app.last_temp().source_label.c_str());
+
+  // Same selection again is a no-op.
+  EXPECT_TRUE(app.set_sensor_source(SensorSourceSetting::kSingleRemote, ids, 1));
+  EXPECT_FALSE(app.take_actions().settings_dirty);
+
+  // Invalid remote selections change nothing.
+  EXPECT_FALSE(app.set_sensor_source(SensorSourceSetting::kAverageRemote,
+                                     nullptr, 0));
+  const std::string long_id(thermostat::storage::kMaxSensorIdLen, 'x');
+  const char* long_ids[] = {long_id.c_str()};
+  EXPECT_FALSE(app.set_sensor_source(SensorSourceSetting::kSingleRemote,
+                                     long_ids, 1));
+  EXPECT_FALSE(app.take_actions().settings_dirty);
+  EXPECT_STREQ("livingroom", app.settings().zones[0].selected_remote_ids[0]);
+
+  // Back to the board sensor clears the remote list.
+  EXPECT_TRUE(app.set_sensor_source(SensorSourceSetting::kBoardOnly, nullptr, 0));
+  EXPECT_TRUE(app.take_actions().settings_dirty);
+  EXPECT_EQ(0, app.settings().zones[0].selected_remote_count);
+  app.step(3000, kNow);
+  EXPECT_EQ(1800, app.last_temp().temp_centi);
+}
+
 THERMOSTAT_TEST_MAIN()

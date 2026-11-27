@@ -317,6 +317,70 @@ TEST_CASE(parse_homeserver_json_rejects_malformed_documents) {
       R"json({"sensors": []})json", nullptr));
 }
 
+TEST_CASE(parse_homeserver_sensors_real_sample) {
+  // Verbatim GET /api/thermostat/sensors response captured on 2026-11-26.
+  const std::string json =
+      R"json({"sensors":[{"id":"livingroom","name":"거실","temperature":21.0,"updated_at":"2026-11-26T22:41:37+09:00"}]})json";
+  std::vector<RemoteSensorReading> readings;
+  EXPECT_TRUE(
+      thermostat::sensor::parse_homeserver_sensors_json(json, &readings));
+  EXPECT_EQ(static_cast<size_t>(1), readings.size());
+  EXPECT_STREQ("livingroom", readings[0].id.c_str());
+  EXPECT_STREQ("거실", readings[0].name.c_str());
+  EXPECT_EQ(2100, readings[0].temp_centi);
+  EXPECT_EQ(1795700497, readings[0].updated_epoch_sec);
+}
+
+// --- Home-server time -----------------------------------------------------
+
+TEST_CASE(parse_homeserver_time_real_sample) {
+  // Verbatim GET /api/thermostat/time response captured on 2026-11-26.
+  int64_t epoch_sec = 0;
+  EXPECT_TRUE(thermostat::sensor::parse_homeserver_time_json(
+      R"json({"now":"2026-11-26T22:48:16+09:00","epoch":1795700896})json",
+      &epoch_sec));
+  EXPECT_EQ(1795700896, epoch_sec);
+}
+
+TEST_CASE(parse_homeserver_time_skips_unknown_and_epoch_keys) {
+  // "epoch" is skipped (the ISO string is authoritative) and unknown keys are
+  // tolerated; key order does not matter.
+  int64_t epoch_sec = 0;
+  EXPECT_TRUE(thermostat::sensor::parse_homeserver_time_json(
+      R"json({"extra":{"nested":[1,2,{"k":"v"}]},"epoch":1,"now":"2026-11-26T22:48:16+09:00"})json",
+      &epoch_sec));
+  EXPECT_EQ(1795700896, epoch_sec);
+
+  EXPECT_TRUE(thermostat::sensor::parse_homeserver_time_json(
+      R"json({"now":"2026-11-26T22:48:16Z"})json", &epoch_sec));
+  EXPECT_EQ(1795700896 + 9 * 3600, epoch_sec);
+}
+
+TEST_CASE(parse_homeserver_time_rejects_invalid_documents) {
+  int64_t epoch_sec = 1234;
+  const char* const invalid[] = {
+      "",
+      "null",
+      "[]",
+      "{}",
+      R"json({"epoch": 1795700896})json",                        // no "now"
+      R"json({"now": 1795700896, "epoch": 1795700896})json",     // number
+      R"json({"now": "2026-11-26T22:48:16"})json",               // no offset
+      R"json({"now": "2026-11-26T22:48:16+09:00")json",          // broken JSON
+      R"json({"now": "2026-11-26T22:48:16+09:00"})json trailing",// trailing
+      R"json({"now": "2026-11-26T22:48:16+09:00",
+              "now": "2026-11-26T22:48:16+09:00"})json",         // duplicate
+  };
+  for (const char* json : invalid) {
+    EXPECT_FALSE(
+        thermostat::sensor::parse_homeserver_time_json(json, &epoch_sec));
+  }
+  // A failed parse must not touch the output.
+  EXPECT_EQ(1234, epoch_sec);
+  EXPECT_FALSE(thermostat::sensor::parse_homeserver_time_json(
+      R"json({"now":"2026-11-26T22:48:16+09:00"})json", nullptr));
+}
+
 // --- SensorSelector: board ------------------------------------------------
 
 TEST_CASE(selector_board_only_reports_age_and_freshness) {

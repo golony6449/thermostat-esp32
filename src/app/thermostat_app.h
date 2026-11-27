@@ -92,6 +92,13 @@ class ThermostatApp {
   // Sanitizes and stores the base URL; marks the settings dirty on change.
   void set_homeserver_url(const char* url);
 
+  // Selects zone 0's temperature source (board only, one remote sensor, or the
+  // average of several). Remote modes need 1..kMaxSelectedRemoteSensors ids
+  // shorter than kMaxSensorIdLen; otherwise nothing changes and false is
+  // returned. Marks the settings dirty on change.
+  bool set_sensor_source(thermostat::storage::SensorSourceSetting source,
+                         const char* const* remote_ids, uint8_t remote_count);
+
   // Debug override used on the bench when no SHT40 / home server is attached:
   // the simulated value replaces the resolved sensor temperature.
   void set_simulated_temp(int16_t temp_centi);
@@ -126,6 +133,7 @@ class ThermostatApp {
 
  private:
   void apply_zone_control();
+  void apply_sensor_config();
   bool commit_target_temp(int16_t new_target_centi);
 
   thermostat::storage::DeviceSettings settings_{};

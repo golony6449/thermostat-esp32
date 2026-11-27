@@ -97,17 +97,7 @@ void ThermostatApp::init(const storage::DeviceSettings& settings,
   last_heat_mode_ =
       mode == core::Mode::kRepeat ? core::Mode::kRepeat : core::Mode::kTemperature;
 
-  const storage::ZonePersistedSettings& zone = settings_.zones[0];
-  sensor::SensorSelectionConfig sensor_config;
-  sensor_config.mode = source_mode_from_setting(zone.sensor_source);
-  sensor_config.board_offset_centi = zone.sensor_offset_centi;
-  for (uint8_t i = 0; i < zone.selected_remote_count; ++i) {
-    if (zone.selected_remote_ids[i][0] != '\0') {
-      sensor_config.selected_remote_ids.emplace_back(
-          zone.selected_remote_ids[i]);
-    }
-  }
-  sensor_selector_.set_config(sensor_config);
+  apply_sensor_config();
 
   last_output_ = core::ZoneOutput{};
   for (size_t i = 0; i < core::kMaxZones; ++i) {
@@ -124,7 +114,7 @@ void ThermostatApp::init(const storage::DeviceSettings& settings,
   push_matter_mode_ = true;
   matter_heat_mode_ = is_matter_heat_mode();
   push_matter_setpoint_ = true;
-  matter_setpoint_centi_ = zone.control.target_temp_centi;
+  matter_setpoint_centi_ = settings_.zones[0].control.target_temp_centi;
   push_matter_temp_ = false;
   matter_temp_centi_ = core::kInvalidTempCenti;
   push_matter_heating_ = false;
@@ -276,6 +266,58 @@ void ThermostatApp::set_homeserver_url(const char* url) {
   std::memcpy(settings_.homeserver_url, candidate.homeserver_url,
               sizeof(settings_.homeserver_url));
   settings_dirty_ = true;
+}
+
+void ThermostatApp::apply_sensor_config() {
+  const storage::ZonePersistedSettings& zone = settings_.zones[0];
+  sensor::SensorSelectionConfig sensor_config;
+  sensor_config.mode = source_mode_from_setting(zone.sensor_source);
+  sensor_config.board_offset_centi = zone.sensor_offset_centi;
+  for (uint8_t i = 0; i < zone.selected_remote_count; ++i) {
+    if (zone.selected_remote_ids[i][0] != '\0') {
+      sensor_config.selected_remote_ids.emplace_back(
+          zone.selected_remote_ids[i]);
+    }
+  }
+  sensor_selector_.set_config(sensor_config);
+}
+
+bool ThermostatApp::set_sensor_source(storage::SensorSourceSetting source,
+                                      const char* const* remote_ids,
+                                      uint8_t remote_count) {
+  storage::DeviceSettings candidate = settings_;
+  storage::ZonePersistedSettings& zone = candidate.zones[0];
+  zone.sensor_source = source;
+  zone.selected_remote_count = 0;
+  std::memset(zone.selected_remote_ids, 0, sizeof(zone.selected_remote_ids));
+  if (source != storage::SensorSourceSetting::kBoardOnly) {
+    if (remote_ids == nullptr || remote_count == 0 ||
+        remote_count > storage::kMaxSelectedRemoteSensors) {
+      return false;
+    }
+    for (uint8_t i = 0; i < remote_count; ++i) {
+      if (remote_ids[i] == nullptr || remote_ids[i][0] == '\0' ||
+          std::strlen(remote_ids[i]) >= storage::kMaxSensorIdLen) {
+        return false;
+      }
+      copy_text(zone.selected_remote_ids[i], storage::kMaxSensorIdLen,
+                std::string(remote_ids[i]));
+    }
+    zone.selected_remote_count = remote_count;
+  }
+  storage::sanitize_settings(&candidate);
+
+  const storage::ZonePersistedSettings& before = settings_.zones[0];
+  if (before.sensor_source == zone.sensor_source &&
+      before.selected_remote_count == zone.selected_remote_count &&
+      std::memcmp(before.selected_remote_ids, zone.selected_remote_ids,
+                  sizeof(zone.selected_remote_ids)) == 0) {
+    return true;
+  }
+  settings_.zones[0] = zone;
+  apply_sensor_config();
+  settings_dirty_ = true;
+  return true;
 }
 
 void ThermostatApp::set_simulated_temp(int16_t temp_centi) {

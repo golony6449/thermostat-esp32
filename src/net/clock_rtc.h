@@ -61,6 +61,9 @@ class ClockRtc {
   bool write_rtc_epoch(int64_t epoch_sec);
   bool sync_ntp_and_save(const char* ntp_server = "pool.ntp.org",
                          uint32_t timeout_ms = 5000);
+  // Sets the system clock (Unix UTC seconds). The RTC must be written
+  // separately with write_rtc_epoch(); this only calls settimeofday().
+  bool set_system_epoch(int64_t epoch_sec);
   bool restore_system_time_from_rtc();
   int64_t now_epoch_sec() const;
 
