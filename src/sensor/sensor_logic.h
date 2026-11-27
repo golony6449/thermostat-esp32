@@ -39,7 +39,7 @@ constexpr int64_t kStaleAgeSec = 600;  // > 10 min: fall back to the board senso
 // A remote value whose last report is older than kStaleAgeSec is still used
 // when the home server confirmed the device online within kStaleAgeSec and
 // the report is not older than this cap (guards a stuck temperature value).
-constexpr int64_t kOnlineMaxReportAgeSec = 3 * 3600;
+constexpr int64_t kOnlineMaxReportAgeSec = 12 * 3600;
 
 // Consecutive home-server failures that trigger the board sensor fallback.
 constexpr uint8_t kMaxConsecutiveFailures = 3;

@@ -749,7 +749,7 @@ TEST_CASE(selector_online_check_boundaries) {
   EXPECT_STREQ("보드 센서 · 원격 센서 값 오래됨",
                resolved.source_label.c_str());
 
-  // age_sec == kOnlineMaxReportAgeSec (3 h) is still accepted...
+  // age_sec == kOnlineMaxReportAgeSec (12 h) is still accepted...
   selector.record_remote_success(
       {make_online_reading("livingroom", "거실", 2140,
                            kNow - kOnlineMaxReportAgeSec, true, kNow)},
